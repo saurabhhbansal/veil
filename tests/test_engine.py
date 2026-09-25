@@ -11,7 +11,7 @@ def _flags():
 
 def test_linux_goes_through_the_bash_launcher():
 	args, env = fortress_command(Path('/opt/tilion-fortress/tilion'), _flags(), P.generate(seed=5))
-	assert args[0] == '/opt/tilion-fortress/tilion'
+	assert Path(args[0]) == Path('/opt/tilion-fortress/tilion')  # str(Path) uses backslashes on Windows
 	assert env['TILION_NO_DEFAULTS'] == '1' and 'TZ' in env
 
 
