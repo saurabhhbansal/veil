@@ -2,7 +2,8 @@
 
 Research project: a stealth browser for autonomous AI agents. A browser-use agent drives the
 Fortress stealth Chromium, while veil rotates coherent device fingerprints and proxy exit IPs and
-keeps the two consistent. README.md covers usage and the design; docs/PROXY_RESEARCH.md covers proxy sourcing.
+keeps the two consistent. README.md covers usage and the design; docs/PROXY_RESEARCH.md covers proxy sourcing; docs/RESEARCH_FINDINGS.md
+is the running log of limits and site defences (add a dated entry when a run teaches something).
 
 ## Decisions already made (don't relitigate without a reason)
 
