@@ -101,8 +101,12 @@ def compare(persona, exit_info, fp: dict, applies_persona: bool) -> list[Check]:
 		Check('WebGL vendor', fp['webglVendor'] == persona.webgl_vendor, persona.webgl_vendor, fp['webglVendor']),
 		Check('WebGL renderer', fp['webglRenderer'] == persona.webgl_renderer, persona.webgl_renderer, fp['webglRenderer']),
 	]
-	if fp['webgpu']:
-		checks.append(Check('WebGPU vendor/arch', [fp['webgpu']['vendor'], fp['webgpu']['architecture']] == [persona.webgpu_vendor, persona.webgpu_architecture], [persona.webgpu_vendor, persona.webgpu_architecture], [fp['webgpu']['vendor'], fp['webgpu']['architecture']]))
+	gpu = fp['webgpu'] or {}
+	checks.append(Check('WebGPU adapter present', bool(gpu), 'an adapter (real Chrome on Windows always has one)', fp['webgpu']))
+	if gpu:
+		want = [persona.webgpu_vendor, persona.webgpu_architecture, persona.webgpu_description]
+		got = [gpu['vendor'], gpu['architecture'], gpu['description']]
+		checks.append(Check('WebGPU vendor/arch/description', got == want, want, got))
 	return checks
 
 

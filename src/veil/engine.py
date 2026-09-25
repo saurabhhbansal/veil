@@ -132,14 +132,12 @@ class FortressEngine:
 		return browser
 
 
-# What tilion.cmd adds besides its default persona. With TILION_NO_DEFAULTS it would drop the
-# WebGPU switches along with the persona, and real Chrome on Windows always exposes WebGPU.
+# What tilion.cmd (v149, win-x64) adds: its whole body is `chrome.exe --enable-unsafe-swiftshader %*`.
+# WebGPU then runs on the host's real D3D12 adapter, with Fortress's --uxr-webgpu-* overriding what
+# the page sees. Forcing a SwiftShader/Vulkan WebGPU adapter (--use-webgpu-adapter=swiftshader,
+# --enable-dawn-features=use_vulkan) makes requestAdapter() return null, which real Chrome never does.
 WINDOWS_LAUNCHER_FLAGS = [
-	'--use-angle=swiftshader',
-	'--enable-unsafe-webgpu',
-	'--enable-features=Vulkan',
-	'--use-webgpu-adapter=swiftshader',
-	'--enable-dawn-features=use_vulkan',
+	'--enable-unsafe-swiftshader',
 ]
 
 
@@ -154,7 +152,6 @@ def fortress_command(launcher: Path, flags: list[str], persona: Persona) -> tupl
 	if launcher.suffix.lower() != '.cmd':
 		return [str(launcher), *flags], env
 	env.pop('TZ', None)  # the MSVC runtime parses TZ POSIX-style; --uxr-timezone already covers it
-	env['VK_ICD_FILENAMES'] = str(launcher.parent / 'vk_swiftshader_icd.json')
 	return [str(launcher.parent / 'chrome.exe'), *WINDOWS_LAUNCHER_FLAGS, *flags], env
 
 

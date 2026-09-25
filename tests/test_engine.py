@@ -15,13 +15,15 @@ def test_linux_goes_through_the_bash_launcher():
 	assert env['TILION_NO_DEFAULTS'] == '1' and 'TZ' in env
 
 
-def test_windows_runs_chrome_directly_with_webgpu_enabled():
+def test_windows_runs_chrome_directly_like_tilion_cmd():
 	launcher = Path('C:/cache/tilion-fortress/tilion.cmd')
 	args, env = fortress_command(launcher, _flags(), P.generate(seed=5))
 	assert Path(args[0]) == launcher.parent / 'chrome.exe'  # never `cmd /c`: it would treat <-loopback> as redirection
 	assert 'cmd' not in args
-	assert '--enable-unsafe-webgpu' in args and '--use-angle=swiftshader' in args
+	assert '--enable-unsafe-swiftshader' in args
+	# a forced SwiftShader WebGPU adapter makes requestAdapter() return null on Windows
+	assert not any(a.startswith(('--use-webgpu-adapter', '--enable-dawn-features')) for a in args)
 	assert '--proxy-bypass-list=<-loopback>' in args
-	assert 'TZ' not in env and env['VK_ICD_FILENAMES'].endswith('vk_swiftshader_icd.json')
+	assert 'TZ' not in env
 	# persona webgpu identity must come after the launcher defaults (last switch wins)
-	assert args.index('--enable-unsafe-webgpu') < args.index(next(a for a in args if a.startswith('--uxr-webgpu-vendor=')))
+	assert args.index('--enable-unsafe-swiftshader') < args.index(next(a for a in args if a.startswith('--uxr-webgpu-vendor=')))
