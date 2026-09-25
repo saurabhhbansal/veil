@@ -38,6 +38,8 @@ FINGERPRINT_JS = r"""
     languages: navigator.languages,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     screen: [screen.width, screen.height],
+    avail: [screen.availWidth, screen.availHeight],
+    outer: [outerWidth, outerHeight],
     inner: [innerWidth, innerHeight],
     webglVendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : null,
     webglRenderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null,
@@ -98,6 +100,8 @@ def compare(persona, exit_info, fp: dict, applies_persona: bool) -> list[Check]:
 		Check('hardwareConcurrency', fp['hardwareConcurrency'] == persona.hw_concurrency, persona.hw_concurrency, fp['hardwareConcurrency']),
 		Check('deviceMemory', fp['deviceMemory'] == persona.device_memory, persona.device_memory, fp['deviceMemory']),
 		Check('screen size', fp['screen'] == [persona.screen_width, persona.screen_height], [persona.screen_width, persona.screen_height], fp['screen']),
+		Check('screen avail size', fp['avail'] == list(persona.window_size), list(persona.window_size), fp['avail']),
+		Check('window outer size fits avail', fp['outer'][0] <= fp['avail'][0] and fp['outer'][1] <= fp['avail'][1], f'<= {fp["avail"]}', fp['outer']),
 		Check('WebGL vendor', fp['webglVendor'] == persona.webgl_vendor, persona.webgl_vendor, fp['webglVendor']),
 		Check('WebGL renderer', fp['webglRenderer'] == persona.webgl_renderer, persona.webgl_renderer, fp['webglRenderer']),
 	]

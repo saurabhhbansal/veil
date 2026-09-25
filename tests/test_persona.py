@@ -42,6 +42,7 @@ def test_flags_and_env():
 	# WebGPU overrides must come after nothing else re-sets them, and window must fit the screen
 	w, h = p.window_size
 	assert w <= p.screen_width and h < p.screen_height
+	assert f'--uxr-screen-avail-width={w}' in p.flags() and f'--uxr-screen-avail-height={h}' in p.flags()
 	assert p.env()['TILION_NO_DEFAULTS'] == '1' and p.env()['TZ'] == 'Europe/Berlin'
 
 

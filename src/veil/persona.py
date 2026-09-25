@@ -82,6 +82,12 @@ class Persona:
 			f'--accept-lang={self.languages}',
 			f'--uxr-screen-width={self.screen_width}',
 			f'--uxr-screen-height={self.screen_height}',
+			# Without these the host monitor's avail/outer size leaks (e.g. avail 1920x1032 on a 1680x1050 screen).
+			# A maximised window's outer size equals the available area.
+			f'--uxr-screen-avail-width={w}',
+			f'--uxr-screen-avail-height={h}',
+			f'--uxr-outer-width={w}',
+			f'--uxr-outer-height={h}',
 			'--uxr-webrtc-policy=disable_non_proxied_udp',
 			# The launcher hardcodes an RTX 3060 WebGPU adapter outside its defaults block;
 			# Chromium keeps the last value of a repeated switch, so these override it.
