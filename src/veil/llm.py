@@ -22,7 +22,10 @@ def build_llm(settings: Settings) -> BaseChatModel:
 
 		if p == 'openai-compatible' and not settings.llm_base_url:
 			raise RuntimeError('VEIL_LLM_PROVIDER=openai-compatible needs VEIL_LLM_BASE_URL')
-		return ChatOpenAI(model=settings.llm_model, api_key=key, base_url=settings.llm_base_url, temperature=settings.llm_temperature)
+		# browser-use sends frequency_penalty=0.3 unless the model is in its reasoning list (which ends at
+		# gpt-5); gpt-6 models reject it with a 400. Leave it unset for OpenAI, like temperature.
+		extra = {'frequency_penalty': None} if p == 'openai' else {}
+		return ChatOpenAI(model=settings.llm_model, api_key=key, base_url=settings.llm_base_url, temperature=settings.llm_temperature, **extra)
 	if p == 'groq':
 		from browser_use import ChatGroq
 
