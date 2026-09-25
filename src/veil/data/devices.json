@@ -1,0 +1,34 @@
+{
+  "_comment": "Seed data for coherent Windows device personas. Weights are rough relative popularity, not measured market share. GPU strings follow real Chrome-on-Windows ANGLE/D3D11 format; before relying on an entry, verify it against a capture from a real machine (see the Persona data section of README.md).",
+  "gpus": [
+    {"id": "nv-rtx3060", "class": "desktop", "weight": 10, "vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "nvidia", "webgpu_architecture": "ampere", "webgpu_description": "NVIDIA GeForce RTX 3060"},
+    {"id": "nv-rtx4060", "class": "desktop", "weight": 8, "vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 (0x00002882) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "nvidia", "webgpu_architecture": "lovelace", "webgpu_description": "NVIDIA GeForce RTX 4060"},
+    {"id": "nv-gtx1650", "class": "desktop", "weight": 7, "vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 (0x00001F82) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "nvidia", "webgpu_architecture": "turing", "webgpu_description": "NVIDIA GeForce GTX 1650"},
+    {"id": "nv-rtx2060", "class": "desktop", "weight": 5, "vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 (0x00001F08) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "nvidia", "webgpu_architecture": "turing", "webgpu_description": "NVIDIA GeForce RTX 2060"},
+    {"id": "nv-rtx3070", "class": "desktop", "weight": 4, "vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "nvidia", "webgpu_architecture": "ampere", "webgpu_description": "NVIDIA GeForce RTX 3070"},
+    {"id": "nv-rtx4070", "class": "desktop", "weight": 3, "vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 (0x00002786) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "nvidia", "webgpu_architecture": "lovelace", "webgpu_description": "NVIDIA GeForce RTX 4070"},
+    {"id": "amd-rx6600", "class": "desktop", "weight": 3, "vendor": "Google Inc. (AMD)", "renderer": "ANGLE (AMD, AMD Radeon RX 6600 (0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "amd", "webgpu_architecture": "rdna-2", "webgpu_description": "AMD Radeon RX 6600"},
+    {"id": "intel-uhd620", "class": "laptop", "weight": 8, "vendor": "Google Inc. (Intel)", "renderer": "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00005917) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "intel", "webgpu_architecture": "gen-9", "webgpu_description": "Intel(R) UHD Graphics 620"},
+    {"id": "intel-irisxe", "class": "laptop", "weight": 12, "vendor": "Google Inc. (Intel)", "renderer": "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "intel", "webgpu_architecture": "gen-12lp", "webgpu_description": "Intel(R) Iris(R) Xe Graphics"},
+    {"id": "amd-apu", "class": "laptop", "weight": 6, "vendor": "Google Inc. (AMD)", "renderer": "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "amd", "webgpu_architecture": "gcn-5", "webgpu_description": "AMD Radeon(TM) Graphics"},
+    {"id": "nv-rtx3050-laptop", "class": "laptop", "weight": 4, "vendor": "Google Inc. (NVIDIA)", "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3050 Laptop GPU (0x000025A2) Direct3D11 vs_5_0 ps_5_0, D3D11)", "webgpu_vendor": "nvidia", "webgpu_architecture": "ampere", "webgpu_description": "NVIDIA GeForce RTX 3050 Laptop GPU"}
+  ],
+  "machine_classes": {
+    "desktop": {
+      "hw_concurrency": [[8, 3], [12, 4], [16, 4], [20, 2], [24, 1]],
+      "device_memory": [[8, 1]],
+      "screens": [[[1920, 1080], 10], [[2560, 1440], 4], [[1680, 1050], 1], [[1600, 900], 1]]
+    },
+    "laptop": {
+      "hw_concurrency": [[4, 2], [8, 5], [12, 3], [16, 2]],
+      "device_memory": [[4, 1], [8, 5]],
+      "screens": [[[1920, 1080], 8], [[1366, 768], 4], [[1600, 900], 2], [[1440, 900], 1]]
+    }
+  },
+  "windows_versions": [
+    {"label": "Windows 10", "platform_version": "10.0.0", "weight": 4},
+    {"label": "Windows 11 23H2", "platform_version": "15.0.0", "weight": 3},
+    {"label": "Windows 11 24H2", "platform_version": "19.0.0", "weight": 5}
+  ],
+  "taskbar_height": 48
+}
