@@ -1,0 +1,27 @@
+from pathlib import Path
+
+from veil import persona as P
+from veil.engine import _common_flags, fortress_command
+from veil.proxy import Proxy
+
+
+def _flags():
+	return _common_flags(9333, Path('/tmp/p'), Proxy.parse('h:1:u:p'), headless=True) + P.generate(seed=5).flags()
+
+
+def test_linux_goes_through_the_bash_launcher():
+	args, env = fortress_command(Path('/opt/tilion-fortress/tilion'), _flags(), P.generate(seed=5))
+	assert args[0] == '/opt/tilion-fortress/tilion'
+	assert env['TILION_NO_DEFAULTS'] == '1' and 'TZ' in env
+
+
+def test_windows_runs_chrome_directly_with_webgpu_enabled():
+	launcher = Path('C:/cache/tilion-fortress/tilion.cmd')
+	args, env = fortress_command(launcher, _flags(), P.generate(seed=5))
+	assert Path(args[0]) == launcher.parent / 'chrome.exe'  # never `cmd /c`: it would treat <-loopback> as redirection
+	assert 'cmd' not in args
+	assert '--enable-unsafe-webgpu' in args and '--use-angle=swiftshader' in args
+	assert '--proxy-bypass-list=<-loopback>' in args
+	assert 'TZ' not in env and env['VK_ICD_FILENAMES'].endswith('vk_swiftshader_icd.json')
+	# persona webgpu identity must come after the launcher defaults (last switch wins)
+	assert args.index('--enable-unsafe-webgpu') < args.index(next(a for a in args if a.startswith('--uxr-webgpu-vendor=')))

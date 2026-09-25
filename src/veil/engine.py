@@ -121,11 +121,8 @@ class FortressEngine:
 	async def launch(self, persona: Persona, proxy: Proxy | None, profile_dir: Path, ephemeral: bool) -> LaunchedBrowser:
 		launcher = await asyncio.to_thread(self.launcher)
 		port = _free_port()
-		args = [str(launcher), *_common_flags(port, profile_dir, proxy, self.settings.headless), *persona.flags()]
-		if str(launcher).lower().endswith('.cmd'):
-			args = ['cmd', '/c', *args]
-		env = {**os.environ, **persona.env()}
-		proc = subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		args, env = fortress_command(launcher, [*_common_flags(port, profile_dir, proxy, self.settings.headless), *persona.flags()], persona)
+		proc = subprocess.Popen(args, env={**os.environ, **env}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 		browser = LaunchedBrowser(cdp_url='', applies_persona=True, _proc=proc, _cleanup=[profile_dir] if ephemeral else [])
 		try:
 			browser.cdp_url = await _wait_for_cdp(port, proc)
@@ -133,6 +130,32 @@ class FortressEngine:
 			browser.close()
 			raise
 		return browser
+
+
+# What tilion.cmd adds besides its default persona. With TILION_NO_DEFAULTS it would drop the
+# WebGPU switches along with the persona, and real Chrome on Windows always exposes WebGPU.
+WINDOWS_LAUNCHER_FLAGS = [
+	'--use-angle=swiftshader',
+	'--enable-unsafe-webgpu',
+	'--enable-features=Vulkan',
+	'--use-webgpu-adapter=swiftshader',
+	'--enable-dawn-features=use_vulkan',
+]
+
+
+def fortress_command(launcher: Path, flags: list[str], persona: Persona) -> tuple[list[str], dict[str, str]]:
+	"""Build argv + extra env for a native Fortress launch.
+
+	Linux goes through the bash launcher (it sets up the bundled fonts). On Windows we run
+	chrome.exe directly and replicate tilion.cmd: going through `cmd /c` would let cmd.exe
+	re-parse the arguments, and `<-loopback>` in the proxy bypass list is a redirection to it.
+	"""
+	env = persona.env()
+	if launcher.suffix.lower() != '.cmd':
+		return [str(launcher), *flags], env
+	env.pop('TZ', None)  # the MSVC runtime parses TZ POSIX-style; --uxr-timezone already covers it
+	env['VK_ICD_FILENAMES'] = str(launcher.parent / 'vk_swiftshader_icd.json')
+	return [str(launcher.parent / 'chrome.exe'), *WINDOWS_LAUNCHER_FLAGS, *flags], env
 
 
 class FortressDockerEngine:

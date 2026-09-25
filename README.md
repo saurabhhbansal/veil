@@ -45,6 +45,7 @@ Fortress ships native binaries for **Linux x64** and **Windows x64**. On macOS, 
 git clone <this repo> && cd major-project
 uv sync
 cp .env.example .env        # add your LLM key; proxy settings are optional
+                            # Windows cmd: copy .env.example .env   (then: notepad .env)
 uv run pytest               # 37 unit tests, no network needed
 uv run veil check           # first run downloads Fortress (~300 MB, SHA-256 verified)
 ```
