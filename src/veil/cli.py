@@ -1,4 +1,4 @@
-"""Command line: `veil run`, `veil check`, `veil persona`, `veil proxies`, `veil identities`."""
+"""Command line: `veil run`, `veil ui`, `veil check`, `veil persona`, `veil proxies`, `veil identities`."""
 from __future__ import annotations
 
 import argparse
@@ -64,6 +64,15 @@ def _cmd_proxies(args: argparse.Namespace, settings: Settings) -> int:
 	return 0
 
 
+def _cmd_ui(args: argparse.Namespace, settings: Settings) -> int:
+	from veil.webui.interface import launch
+
+	if args.host not in ('127.0.0.1', 'localhost'):
+		print(f'warning: the UI has no login and holds your API key; anyone who can reach {args.host}:{args.port} can drive it', file=sys.stderr)
+	launch(settings, host=args.host, port=args.port, open_browser=not args.no_browser, theme=args.theme)
+	return 0
+
+
 def _cmd_identities(args: argparse.Namespace, settings: Settings) -> int:
 	root = settings.data_dir / 'identities'
 	for d in sorted(root.glob('*/identity.json')) if root.exists() else []:
@@ -98,6 +107,13 @@ def main(argv: list[str] | None = None) -> int:
 	x = sub.add_parser('proxies', help='test configured proxies: exit IP, country, latency')
 	x.add_argument('--samples', type=int, default=3, help='gateway mode: how many sessions to sample')
 	x.set_defaults(fn=_cmd_proxies)
+
+	u = sub.add_parser('ui', help='open the web control panel (task box, live view, identity, pause/stop)')
+	u.add_argument('--host', default='127.0.0.1', help='interface to bind (default: this PC only)')
+	u.add_argument('--port', type=int, default=7788)
+	u.add_argument('--theme', default='Ocean', help='Gradio theme: Ocean, Soft, Monochrome, Glass, Origin, Citrus, Base, Default')
+	u.add_argument('--no-browser', action='store_true', help="don't open the page automatically")
+	u.set_defaults(fn=_cmd_ui)
 
 	i = sub.add_parser('identities', help='list saved sticky identities')
 	i.set_defaults(fn=_cmd_identities)

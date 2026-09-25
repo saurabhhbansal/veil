@@ -38,25 +38,32 @@ src/veil/
   detection.py  classify(url, title, html) -> BlockSignal (Cloudflare/Akamai/PX/DataDome/Imperva/Google)
   agent.py      run_task: Agent + on_step_end block guard; rotates identity and retries on a block
   check.py      `veil check`: compares the page-visible fingerprint with the persona
-  cli.py        run | check | persona | proxies | identities
+  cli.py        run | ui | check | persona | proxies | identities
+  webui/        `veil ui`: Gradio panel adapted from browser-use/web-ui (MIT). runner.py = UI-agnostic run state
+                (RunHooks into agent.run_task); tabs/run_tab/interface = Gradio. web-ui itself pins browser-use 0.1.48,
+                so only its layout was reused, not its agent/browser code.
 ```
 
-## Status (at handoff from the ARM VPS, 2026-09-25)
+## Status (Windows PC, 2026-09-26)
 
-Built and unit-tested on an ARM VPS, where Fortress can't run (x64 only), using `VEIL_ENGINE=chromium`.
-- Verified: 39 unit tests; a full session with the stock engine; authenticated HTTP proxy routing.
-- **NOT yet verified:** the Fortress engine itself (on this Windows PC, first run), whether every
-  `--uxr-*` switch lands, the WebGPU architecture names and GPU PCI IDs in devices.json (seed data written from memory),
-  a real `veil run` with an LLM, and a real proxy.
+Verified on Windows x64 with the Fortress engine:
+- 46 unit tests; `veil check` 18/18 across NVIDIA/AMD/Intel personas (incl. WebGPU adapter, screen avail/outer size).
+- devices.json PCI IDs and Dawn WebGPU architecture names checked (no changes needed).
+- `veil run` and `veil ui` complete real tasks with OpenAI gpt-6-luna; UI Stop/Pause/Resume tested.
+- Fixed on first contact: the Windows launcher flags (a forced SwiftShader WebGPU adapter returned null), the host
+  monitor's avail size leaking (now `--uxr-screen-avail-*` / `--uxr-outer-*`), and browser-use sending
+  `frequency_penalty` to gpt-6 models (rejected with a 400).
+- **NOT yet verified:** a real proxy, and a site with serious bot protection.
+- Open detector findings: BrowserScan flags the `Accept-Language` header dropping `hi` (vs navigator.languages), a
+  timezone mismatch, and canvas/audio/WebGL noise; CreepJS sees the canvas/audio noise. Win10 personas get the
+  host's Win11 fonts. Chrome 149 is behind stable (155).
 
 ## Next steps, in order
 
-1. `uv sync`, then `uv run pytest`, then `uv run veil check`. Fix every FAIL line. Each one is a surface where
-   what the page sees differs from the persona we asked for.
-2. `uv run veil check --screenshots`, then review reports/*/ (sannysoft, CreepJS, BrowserScan, rebrowser).
-3. First agent run: `uv run veil run "..."` with the key in .env.
-4. Roadmap in README.md: human-like mouse and typing, proxy bandwidth savers, phone-proxy IP rotation over ADB,
-   concurrent sessions, growing devices.json from real device captures.
+1. Fix the `Accept-Language` / navigator.languages mismatch.
+2. Real proxy (phone first, see docs/PROXY_RESEARCH.md), then a harder target site.
+3. Roadmap in README.md: user takeover mid-task, human-like mouse and typing, proxy bandwidth savers,
+   phone-proxy IP rotation over ADB, concurrent sessions, growing devices.json from real device captures.
 
 ## Conventions
 

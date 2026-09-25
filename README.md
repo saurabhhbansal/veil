@@ -52,6 +52,26 @@ uv run veil check           # first run downloads Fortress (~300 MB, SHA-256 ver
 
 ## Usage
 
+### Web control panel
+
+```bash
+uv run veil ui                       # opens http://127.0.0.1:7788 in your browser
+```
+
+Type a task, press **Submit Task**, and watch:
+- **Agent Interaction:** each step's goal, actions and screenshot, then the result and every attempt made.
+- **Browser Live View:** a screenshot of the stealth browser every second.
+- **Current identity:** the exit IP and the fake device the site is seeing right now.
+- **Stop / Pause / Resume / Clear:** Stop finishes the current step and doesn't count against the proxy.
+
+The **Agent Settings** and **Stealth & Network** tabs override `.env` for the next run (blank fields keep `.env`).
+**Load & Save Config** saves those settings without API keys or proxy credentials. Runs are kept in `~/.veil/runs/`
+(step screenshots, `result.json`, a GIF). The UI binds to this PC only and has no login, so don't expose it with
+`--host 0.0.0.0` on a network you don't trust. It's adapted from [browser-use/web-ui](https://github.com/browser-use/web-ui)
+(MIT): same layout, rebuilt on veil's `StealthSession` and browser-use 0.13.
+
+### Command line
+
 ```bash
 uv run veil check                    # launch one identity, verify the page sees the persona we set
 uv run veil check --screenshots      # also screenshot sannysoft / CreepJS / BrowserScan / rebrowser into reports/
@@ -128,7 +148,9 @@ Verified on the ARM development VPS with the stock-Chromium engine:
 
 ## Roadmap
 
-- [ ] Run `veil check --screenshots` on Fortress and fix any surface that doesn't apply
+- [x] Run `veil check --screenshots` on Fortress and fix any surface that doesn't apply
+- [x] Web control panel (`veil ui`)
+- [ ] Let the user take over the browser mid-task (CAPTCHA, login), as web-ui's "ask for help" did
 - [ ] Human-like input: curved mouse paths and typing cadence (browser-use clicks via CDP events)
 - [ ] Proxy bandwidth savers: optional resource blocking, disabling Chromium background traffic
 - [ ] Phone-proxy IP rotation via ADB airplane-mode toggle

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from browser_use import Agent
 
@@ -24,7 +27,7 @@ class Attempt:
 	proxy: str | None
 	exit_ip: str | None
 	persona: str | None
-	outcome: str  # done | blocked | failed | error
+	outcome: str  # done | blocked | failed | stopped | error
 	detail: str = ''
 
 
@@ -33,6 +36,31 @@ class TaskResult:
 	ok: bool
 	output: str | None
 	attempts: list[Attempt] = field(default_factory=list)
+
+
+@dataclass
+class RunHooks:
+	"""Optional callbacks for a UI that wants to watch and steer a run (the CLI passes none).
+
+	on_attempt(n, total, session, agent) fires once the identity is up and the agent exists, before
+	it runs: the place to show the persona and exit IP, and to keep `agent` for pause/stop.
+	on_step is browser-use's register_new_step_callback(state_summary, model_output, step_number).
+	on_attempt_end(n, attempt) fires after each attempt with its outcome.
+	stop_requested() says the user stopped the run (browser-use's own `stopped` flag also covers a crashed browser).
+	"""
+
+	on_attempt: Callable[[int, int, StealthSession, Agent], Awaitable[None] | None] | None = None
+	on_step: Callable[..., Awaitable[None] | None] | None = None
+	on_attempt_end: Callable[[int, Attempt], Awaitable[None] | None] | None = None
+	stop_requested: Callable[[], bool] | None = None
+
+
+async def _call(fn, *args) -> None:
+	if fn is None:
+		return
+	res = fn(*args)
+	if inspect.isawaitable(res):
+		await res
 
 
 class _BlockGuard:
@@ -57,7 +85,16 @@ class _BlockGuard:
 			agent.stop()
 
 
-async def run_task(task: str, settings: Settings, identity_name: str | None = None, max_steps: int | None = None) -> TaskResult:
+async def run_task(
+	task: str,
+	settings: Settings,
+	identity_name: str | None = None,
+	max_steps: int | None = None,
+	*,
+	hooks: RunHooks | None = None,
+	agent_kwargs: dict[str, Any] | None = None,
+) -> TaskResult:
+	hooks = hooks or RunHooks()
 	llm = build_llm(settings)
 	proxy_source = make_proxy_source(settings)  # shared across attempts so cooldowns carry over
 	identity = Identity.load_or_create(settings, identity_name) if identity_name else None
@@ -76,20 +113,28 @@ async def run_task(task: str, settings: Settings, identity_name: str | None = No
 				attempt.exit_ip = session.exit.ip if session.exit else None
 				attempt.persona = session.persona.summary() if session.persona else None
 				guard = _BlockGuard(session)
-				agent = Agent(task=task, llm=llm, browser_session=session.browser)
+				agent = Agent(task=task, llm=llm, browser_session=session.browser, register_new_step_callback=hooks.on_step, **(agent_kwargs or {}))
+				await _call(hooks.on_attempt, n, attempts_allowed, session, agent)
 				history = await agent.run(max_steps=max_steps or settings.max_steps, on_step_end=guard)
 
 				if guard.signal:
 					session.report(ok=False, blocked=True)
 					attempt.outcome, attempt.detail = 'blocked', f'{guard.signal.vendor}: {guard.signal.evidence}'
+					await _call(hooks.on_attempt_end, n, attempt)
 					continue
+				if hooks.stop_requested and hooks.stop_requested():  # the user pressed Stop: not the proxy's fault, and no answer
+					attempt.outcome = 'stopped'
+					await _call(hooks.on_attempt_end, n, attempt)
+					return result
 				done = history.is_done() and history.is_successful() is not False
 				session.report(ok=done)
 				attempt.outcome = 'done' if done else 'failed'
 				attempt.detail = '; '.join(e for e in history.errors() if e)[-500:]
 				result.ok, result.output = done, history.final_result()
+				await _call(hooks.on_attempt_end, n, attempt)
 				return result  # the agent finished (or gave up) on its own terms; retrying won't help
 		except Exception as e:
 			log.exception('attempt %d crashed', n)
 			attempt.outcome, attempt.detail = 'error', f'{type(e).__name__}: {e}'
+			await _call(hooks.on_attempt_end, n, attempt)
 	return result
