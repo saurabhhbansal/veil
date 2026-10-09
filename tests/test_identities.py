@@ -19,9 +19,10 @@ ASHA = {'id': 'emp-104', 'email': 'asha@corp.test', 'first_name': 'Asha', 'last_
 class FakeServer:
 	"""Records every request; answers like the contract in docs/IDENTITY_API.md."""
 
-	def __init__(self, people=(ASHA,), codes=None):
+	def __init__(self, people=(ASHA,), codes=None, links=None):
 		self.people = {p['id']: p for p in people}
 		self.codes = codes or {}
+		self.links = links or {}
 		self.requests: list[httpx.Request] = []
 		self.events: list[dict] = []
 
@@ -46,6 +47,9 @@ class FakeServer:
 		if request.method == 'GET' and parts[4:] == ['codes']:
 			code = self.codes.get((person['id'], request.url.params['channel']))
 			return httpx.Response(200, json={'code': code}) if code else httpx.Response(404, json={'error': 'no code yet'})
+		if request.method == 'GET' and parts[4:] == ['links']:
+			link = self.links.get(person['id'])
+			return httpx.Response(200, json={'link': link}) if link else httpx.Response(404, json={'error': 'no link yet'})
 		return httpx.Response(405)
 
 
@@ -102,7 +106,7 @@ def test_server_errors_say_what_happened(tmp_path):
 
 
 def test_report_and_codes():
-	server = FakeServer(codes={('emp-104', 'sms'): '482913'})
+	server = FakeServer(codes={('emp-104', 'sms'): '482913'}, links={'emp-104': 'https://shop.test/verify?t=abc'})
 	row = A.Signup('shop.test', 'emp-104', 'asha@corp.test', 'Pw1!', 'signed_up', 'acct-shop.test-emp-104', note='welcome')
 	_api(server).report(row, 'signup', background=False)
 	assert server.events[0]['status'] == 'signed_up' and 'password' not in server.events[0]
@@ -112,6 +116,9 @@ def test_report_and_codes():
 	assert api.code('emp-104', 'sms', 'shop.test', 0) == '482913'
 	assert api.code('emp-104', 'email', 'shop.test', 0) is None
 	assert asyncio.run(api.code_fetcher('emp-104', 'shop.test')('sms')) == '482913'
+	assert asyncio.run(api.code_fetcher('emp-104', 'shop.test')('link')) == 'https://shop.test/verify?t=abc'
+	assert server.requests[-1].url.path == '/v1/identities/emp-104/links' and 'channel' not in server.requests[-1].url.params
+	assert api.link('emp-404', 'shop.test', 0) is None  # unknown id: a 404 is just "nothing yet"
 	assert identities.LocalProfiles([]).code_fetcher('p1', 'x') is None  # profiles.csv: codes go to the person
 
 
@@ -143,6 +150,18 @@ async def test_the_app_signs_up_as_whoever_the_server_assigns(tmp_path, monkeypa
 		await asyncio.wait_for(app.state.runner._task, timeout=2)
 	await asyncio.sleep(0.05)  # the outcome is reported on a background thread
 	assert seen['identity'] == 'acct-shop.test-emp-104' and seen['country'] == 'DE' and seen['code'] == '111222'
-	assert seen['data']['https://*.shop.test']['x_email'] == 'asha@corp.test' and 'get_verification_code' in seen['task']
+	assert seen['data']['https://*.shop.test']['x_email'] == 'asha@corp.test'
+	assert 'get_verification_code' in seen['task'] and 'get_verification_link' in seen['task']
 	assert A.SignupLog(env.accounts_dir / 'signups.csv').get('shop.test', 'emp-104').status == 'signed_up'
 	assert server.events and server.events[-1]['status'] == 'signed_up'
+
+
+def test_the_agent_gets_code_and_link_actions_only_with_a_fetcher():
+	from veil.agent import _tools
+
+	async def fetch(channel):
+		return 'https://shop.test/verify' if channel == 'link' else '123456'
+
+	with_codes = set(_tools(None, fetch).registry.registry.actions)
+	assert {'get_verification_code', 'get_verification_link'} <= with_codes and 'request_human_help' not in with_codes
+	assert not {'get_verification_code', 'get_verification_link'} & set(_tools(lambda *a: None).registry.registry.actions)

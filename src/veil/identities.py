@@ -8,6 +8,7 @@ reading profiles.csv. The full contract (requests, responses, errors) is in docs
     GET  {base}/v1/identities                                       -> {"identities": [{id, email}, ...]}  (optional)
     POST {base}/v1/identities/{id}/events  {site, action, status, note, browser_identity, password?}      (optional)
     GET  {base}/v1/identities/{id}/codes?channel=sms|email&site=&since=  -> {"code": "..."} or 404     (optional)
+    GET  {base}/v1/identities/{id}/links?site=&since=                    -> {"link": "..."} or 404     (optional)
 
 An identity is a JSON object with the profiles.csv columns (accounts.PROFILE_COLUMNS); `id` and `email` are required.
 Every request carries `Authorization: Bearer <VEIL_IDENTITY_API_TOKEN>` when a token is set.
@@ -41,6 +42,10 @@ CODE_POLL_SECONDS = 5
 
 class IdentityAPIError(ValueError):
 	"""The identity server said no, or couldn't be reached. A ValueError, so callers that show ValueErrors show this."""
+
+	def __init__(self, message: str, status: int | None = None):
+		super().__init__(message)
+		self.status = status  # the HTTP status, when the server answered
 
 
 class ProfileSource(Protocol):
@@ -126,7 +131,7 @@ class IdentityAPI:
 		except httpx.HTTPError as e:
 			raise IdentityAPIError(f'identity server unreachable at {self.base_url} ({type(e).__name__}: {e})') from e
 		if res.status_code >= 400:
-			raise IdentityAPIError(f'identity server: {res.status_code} {_error_text(res)}')
+			raise IdentityAPIError(f'identity server: {res.status_code} {_error_text(res)}', res.status_code)
 		return res
 
 	def assign(self, site: str, purpose: str, exclude: Collection[str] = ()) -> dict[str, str]:
@@ -174,31 +179,47 @@ class IdentityAPI:
 		else:
 			send()
 
-	def code(self, profile_id: str, channel: str, site: str, since: float) -> str | None:
-		"""The newest one-time code the person received on `channel` after `since` (unix seconds), or None yet."""
+	def _latest(self, kind: str, profile_id: str, site: str, since: float, channel: str | None = None) -> str | None:
+		"""kind 'code' or 'link': the newest one the person received after `since` (unix seconds), or None yet."""
+		params: dict[str, Any] = {'site': site, 'since': int(since)}
+		if channel:
+			params['channel'] = channel
 		try:
-			res = self._call('GET', f'/identities/{quote(profile_id, safe="")}/codes', params={'channel': channel, 'site': site, 'since': int(since)})
+			res = self._call('GET', f'/identities/{quote(profile_id, safe="")}/{kind}s', params=params)
 		except IdentityAPIError as e:
-			if ' 404 ' in f'{e} ':
+			if e.status == 404:
 				return None
 			raise
 		if res.status_code == 204:
 			return None
 		data = _json(res)
-		code = str(data.get('code') or '').strip() if isinstance(data, dict) else ''
-		return code or None
+		value = str(data.get(kind) or '').strip() if isinstance(data, dict) else ''
+		return value or None
+
+	def code(self, profile_id: str, channel: str, site: str, since: float) -> str | None:
+		"""The newest one-time code sent to the person's phone ('sms') or mailbox ('email') after `since`."""
+		return self._latest('code', profile_id, site, since, channel)
+
+	def link(self, profile_id: str, site: str, since: float) -> str | None:
+		"""The newest verification / confirmation link emailed to the person after `since`."""
+		return self._latest('link', profile_id, site, since)
 
 	def code_fetcher(self, profile_id: str, site: str) -> Callable[[str], Awaitable[str | None]]:
-		"""For the agent's get_verification_code action: waits up to CODE_WAIT_SECONDS for a code sent since now."""
+		"""For the agent's get_verification_code / get_verification_link actions: fetch('sms' | 'email' | 'link') waits
+		up to CODE_WAIT_SECONDS for one that arrived since this run started."""
 		since = time.time() - 60  # the form may have been sent just before this run's identity was assigned
 
 		async def fetch(channel: str) -> str | None:
-			channel = channel if channel in CODE_CHANNELS else 'sms'
+			if channel == 'link':
+				lookup = lambda: self.link(profile_id, site, since)  # noqa: E731
+			else:
+				ch = channel if channel in CODE_CHANNELS else 'sms'
+				lookup = lambda: self.code(profile_id, ch, site, since)  # noqa: E731
 			deadline = time.monotonic() + CODE_WAIT_SECONDS
 			while True:
-				code = await asyncio.to_thread(self.code, profile_id, channel, site, since)
-				if code or time.monotonic() >= deadline:
-					return code
+				found = await asyncio.to_thread(lookup)
+				if found or time.monotonic() >= deadline:
+					return found
 				await asyncio.sleep(CODE_POLL_SECONDS)
 
 		return fetch

@@ -43,7 +43,8 @@ src/veil/
                 signups.csv logs site/profile/status, one account per (site, profile), each on its own sticky identity;
                 build_login_task / plan_login log in with the row's password (or the profile's, for accounts made outside veil)
   identities.py where account runs get their person: LocalProfiles (profiles.csv) or IdentityAPI (VEIL_IDENTITY_API, the
-                company identity server: assign / get / list / events / OTP codes; contract in docs/IDENTITY_API.md)
+                company identity server: assign / get / list / events / OTP codes / email links; contract in docs/IDENTITY_API.md;
+                the server itself is the sibling project ../veil-identity-server)
   planner.py    chat message -> None (ordinary task) or Jobs (signup | login | auto | task); several jobs run side by side
   envfile.py    the app writes API keys, model defaults and proxy settings back to .env (and os.environ)
   cli.py        run | ui | check | persona | proxies | identities

@@ -283,10 +283,13 @@ def sensitive_data(site: str, values: dict[str, str]) -> dict[str, dict[str, str
 
 
 def _blocker(ask_human: bool, codes: bool = False) -> str:
-	"""codes: the identity server can read the person's one-time codes (the agent has get_verification_code)."""
+	"""codes: the identity server can read the person's one-time codes and confirmation links (the agent has
+	get_verification_code and get_verification_link)."""
 	fetch = (
 		"- If the site sends a one-time code to x_email or x_phone, call get_verification_code with channel 'email' or 'sms' "
 		"(it waits for the code to arrive) and type what it returns. Only if it returns no code, treat it as something only I can do.\n"
+		"- If the site says it emailed a link to confirm the address, call get_verification_link, open the link it returns in the "
+		"current tab, and finish whatever that page asks. Once it confirms the account, the status is signed_up, not verify_email.\n"
 		if codes
 		else ''
 	)

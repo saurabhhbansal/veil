@@ -127,8 +127,8 @@ class _BlockGuard:
 
 
 def _tools(request_human=None, fetch_code=None) -> Tools:
-	"""browser-use's default actions, plus one to hand the browser to the person watching and/or one to read
-	a one-time code from the identity server."""
+	"""browser-use's default actions, plus one to hand the browser to the person watching and/or ones to read
+	a one-time code or an email confirmation link from the identity server."""
 	tools = Tools()
 
 	if request_human:
@@ -161,6 +161,21 @@ def _tools(request_human=None, fetch_code=None) -> Tools:
 			# The code itself stays out of long-term memory: it's single-use and needed only for the next input.
 			return ActionResult(extracted_content=f'The {channel} verification code is {code}', long_term_memory=f'Fetched the {channel} code.')
 
+		@tools.action(
+			"Get the confirmation link the site just emailed to the account (\"verify your email\", \"confirm your account\"). "
+			'Waits up to a minute and a half for it to arrive. Open the link it returns in the current tab with navigate.'
+		)
+		async def get_verification_link() -> ActionResult:
+			try:
+				link = await fetch_code('link')
+			except Exception as e:
+				log.warning('verification link lookup failed: %s', e)
+				link = None
+			if not link:
+				msg = 'No confirmation link arrived. Report that the site asked to confirm the email.'
+				return ActionResult(extracted_content=msg, long_term_memory=msg)
+			return ActionResult(extracted_content=f'The confirmation link is {link}', long_term_memory='Fetched the email confirmation link.')
+
 	return tools
 
 
@@ -178,8 +193,8 @@ async def run_task(
 ) -> TaskResult:
 	"""proxy_source: share one between runs that go at the same time, so each takes a different proxy.
 	country: ISO code of where the person is (an account run): the exit IP is picked there when the source can.
-	fetch_code(channel): reads the account's one-time codes (identities.IdentityAPI.code_fetcher); the agent
-	gets a get_verification_code action for it."""
+	fetch_code(channel): reads the account's one-time codes ('sms' | 'email') and confirmation links ('link')
+	(identities.IdentityAPI.code_fetcher); the agent gets get_verification_code / get_verification_link actions for it."""
 	hooks = hooks or RunHooks()
 	llm = build_llm(settings)
 	proxy_source = proxy_source or make_proxy_source(settings)  # shared across attempts so cooldowns carry over

@@ -9,6 +9,11 @@ This document is the contract. If your server implements the endpoints below, ve
 The client side lives in `src/veil/identities.py`, and `tests/test_identities.py` contains a fake server that
 follows this contract exactly.
 
+**There's a ready-made server:** [`../veil-identity-server`](../../veil-identity-server/README.md), a separate
+project next to veil. It implements everything here, stores employees in SQLite, and catches SMS codes (Twilio,
+Android forwarder apps, any gateway) and email codes and links (IMAP polling, inbound-mail webhooks). Copy that
+folder to the company machine and follow its README.
+
 ---
 
 ## 1. Turning it on
@@ -54,6 +59,9 @@ veil signup example.com         # asks the server for a person, then runs the si
    │
    ├──(3) GET /v1/identities/{id}/codes?channel=sms ────▶ (optional) the OTP the site sent
    │        polled every 5 s for up to 90 s                  to that person's phone or mailbox
+   │
+   ├──(3b) GET /v1/identities/{id}/links ──────────────▶ (optional) the "confirm your email" link;
+   │        polled the same way; the agent opens it          the run ends signed_up, not verify_email
    │
    └──(4) POST /v1/identities/{id}/events ─────────────▶ (optional) how it ended: signed_up,
             {site, action, status, note, ...}                verify_email, needs_human, failed…
@@ -259,85 +267,42 @@ The code is shown to the agent once so it can type it. It is kept out of the age
 
 ---
 
-## 5. Minimal server you can start from
+### 4.6 `GET /v1/identities/{id}/links?site=...&since=...` (optional)
 
-This is a reference implementation in about 60 lines (Python + FastAPI). It keeps employees in a dict.
-Replace that dict with your HR database or LDAP. Run it on the company machine, then point
-`VEIL_IDENTITY_API` at it.
+This returns the confirmation link from a "verify your email" message. When a site says it has emailed a link,
+the agent calls `get_verification_link`. veil polls this endpoint the same way as codes (every 5 seconds, for up
+to 90 seconds). The agent then opens the link in the same tab, so the run ends `signed_up` instead of
+`verify_email`.
 
-```python
-# identity_server.py  —  pip install fastapi uvicorn ; uvicorn identity_server:app --host 0.0.0.0 --port 8900
-import time
-from fastapi import FastAPI, Header, HTTPException, Request, Response
+| Query | Meaning |
+|---|---|
+| `site` | the site that sent it |
+| `since` | Unix seconds. Return only links received after this time. |
 
-TOKEN = 'change-me'
-EMPLOYEES = {
-    'emp-104': {'id': 'emp-104', 'email': 'asha.rao@yourcompany.com', 'first_name': 'Asha', 'last_name': 'Rao',
-                'dob': '1994-03-07', 'phone': '+4915112345678', 'country': 'DE'},
-    'emp-105': {'id': 'emp-105', 'email': 'ravi.k@yourcompany.com', 'first_name': 'Ravi', 'last_name': 'K',
-                'phone': '+919812345678', 'country': 'IN'},
-}
-ACCOUNTS: dict[tuple[str, str], str] = {}        # (site, id) -> last status
-CODES: dict[tuple[str, str], list[tuple[float, str]]] = {}   # (id, channel) -> [(received_at, code)]
+**Link available**: `200 {"link": "https://shop.example.com/confirm?token=..."}`.
+**Not yet**: `404` or `204`.
 
-app = FastAPI()
+Return the link the person would click: the "Verify email" button, not unsubscribe or help links. Without this
+endpoint, veil reports `verify_email` and someone clicks the link by hand.
 
-def auth(authorization: str | None):
-    if authorization != f'Bearer {TOKEN}':
-        raise HTTPException(401, 'bad token')
+---
 
-@app.post('/v1/identities/assign')
-async def assign(request: Request, authorization: str | None = Header(None)):
-    auth(authorization)
-    body = await request.json()
-    site, purpose, exclude = body['site'], body['purpose'], set(body['exclude'])
-    wanted = body.get('exit_countries')
-    for emp in EMPLOYEES.values():
-        has_account = (site, emp['id']) in ACCOUNTS
-        if emp['id'] in exclude or has_account != (purpose == 'login'):
-            continue
-        if wanted and emp.get('country') not in wanted:
-            continue
-        return emp
-    raise HTTPException(409, f'no free employee for {site}')
+## 5. The server
 
-@app.get('/v1/identities')
-def listing(authorization: str | None = Header(None)):
-    auth(authorization)
-    return {'identities': [{'id': e['id'], 'email': e['email']} for e in EMPLOYEES.values()]}
+[`veil-identity-server`](../../veil-identity-server/README.md) (in `D:\Major Projecteil-identity-server`)
+implements this whole contract:
 
-@app.get('/v1/identities/{id}')
-def get(id: str, authorization: str | None = Header(None)):
-    auth(authorization)
-    if id not in EMPLOYEES:
-        raise HTTPException(404, 'no such identity')
-    return EMPLOYEES[id]
+- **Employees**: imported from CSV. A person is picked per site with no repeats, and assignments are reserved so
+  two runs never get the same person.
+- **SMS codes**: from Twilio (signature-checked), from any SMS gateway's webhook, or from an Android phone running
+  an SMS-to-URL forwarder app.
+- **Email codes and links**: by polling a shared catch-all mailbox or each person's own mailbox over IMAP
+  (read-only), or by inbound-mail webhooks (SendGrid, Mailgun, Cloudflare, raw MIME).
+- **Extraction**: the code (`G-123 456` becomes `123456`) and the confirmation link are pulled out of each
+  message as it arrives. Messages naming the site come first.
+- **Admin**: an admin API and the `ids` CLI.
 
-@app.post('/v1/identities/{id}/events', status_code=204)
-async def event(id: str, request: Request, authorization: str | None = Header(None)):
-    auth(authorization)
-    e = await request.json()
-    if e['status'] in ('signed_up', 'verify_email', 'logged_in', 'already_registered'):
-        ACCOUNTS[(e['site'], id)] = e['status']
-    return Response(status_code=204)
-
-@app.get('/v1/identities/{id}/codes')
-def codes(id: str, channel: str, site: str, since: int, authorization: str | None = Header(None)):
-    auth(authorization)
-    fresh = [c for t, c in CODES.get((id, channel), []) if t > since]
-    if not fresh:
-        raise HTTPException(404, 'no code yet')
-    return {'code': fresh[-1]}
-
-# Wire your SMS provider's inbound webhook / mailbox poller to append here:
-#   CODES.setdefault((emp_id, 'sms'), []).append((time.time(), '482913'))
-```
-
-Test it by hand before involving veil:
-
-```bash
-curl -s -X POST http://10.0.0.5:8900/v1/identities/assign -H "Authorization: Bearer change-me" -H "Content-Type: application/json" -d "{\"site\":\"example.com\",\"url\":\"https://example.com\",\"purpose\":\"signup\",\"country\":null,\"exit_countries\":null,\"exclude\":[]}"
-```
+You can also write your own server in any language. Anything that answers the endpoints above works.
 
 ---
 
@@ -366,7 +331,7 @@ Notes for running it in a company:
 |---|---|
 | `src/veil/identities.py` | `IdentityAPI` (this contract), `LocalProfiles` (profiles.csv), `profile_source(settings)` picks one |
 | `src/veil/accounts.py` | `plan_signup` / `plan_login` take a source: the log first (same person on retry), then `source.get` / `source.assign` |
-| `src/veil/agent.py` | `get_verification_code` action, added when the source can fetch codes |
+| `src/veil/agent.py` | `get_verification_code` / `get_verification_link` actions, added when the source can fetch them |
 | `src/veil/webui/server.py` | account runs call the source off the event loop, then report outcomes |
 | `src/veil/config.py` | `VEIL_IDENTITY_API*` settings |
 | `tests/test_identities.py` | a fake server implementing this document, and the tests that run against it |
