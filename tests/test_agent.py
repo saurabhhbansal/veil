@@ -53,7 +53,7 @@ def _fakes(monkeypatch, history_for_attempt, blocked_attempts=()):
 		def __init__(self, **kw):
 			pass
 
-		async def run(self, max_steps, on_step_end):
+		async def run(self, max_steps, on_step_end, on_step_start=None):
 			return history_for_attempt(len(launched))
 
 	monkeypatch.setattr(agent_mod, 'StealthSession', FakeSession)
@@ -144,3 +144,45 @@ async def test_guard_rotates_a_hard_block_without_asking_and_never_asks_without_
 	agent = _StopAgent()
 	await cli_guard(agent)  # the CLI has nobody to ask: a CAPTCHA widget alone isn't a block
 	assert not agent.stopped and cli_guard.signal is None
+
+
+
+@pytest.mark.asyncio
+async def test_a_late_steer_continues_the_same_agent(monkeypatch):
+	runs = []
+
+	class FakeSession:
+		def __init__(self, settings, identity=None, proxy_source=None):
+			self.proxy = self.exit = self.persona = self.browser = None
+
+		async def __aenter__(self):
+			return self
+
+		async def __aexit__(self, *exc):
+			pass
+
+		def report(self, **kw):
+			pass
+
+	class FakeAgent:
+		def __init__(self, **kw):
+			self.state = SimpleNamespace(n_steps=1)
+			self.tasks = [kw['task']]
+
+		def add_new_task(self, text):
+			self.tasks.append(text)
+
+		async def run(self, max_steps, on_step_end, on_step_start=None):
+			runs.append((list(self.tasks), max_steps))
+			self.state.n_steps += 1
+			return _History(True, True, f'answer {len(runs)}')
+
+	monkeypatch.setattr(agent_mod, 'StealthSession', FakeSession)
+	monkeypatch.setattr(agent_mod, 'Agent', FakeAgent)
+	monkeypatch.setattr(agent_mod, 'build_llm', lambda s: None)
+	monkeypatch.setattr(agent_mod, 'make_proxy_source', lambda s: None)
+	pending = [['also give the first sentence'], []]
+	hooks = agent_mod.RunHooks(take_followups=lambda: pending.pop(0) if pending else [])
+	r = await agent_mod.run_task('title?', Settings(max_steps=5), hooks=hooks)
+	assert r.output == 'answer 2' and len(runs) == 2
+	assert 'also give the first sentence' in runs[1][0][-1] and runs[1][1] == 2 + 5  # a fresh step budget

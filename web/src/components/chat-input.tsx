@@ -9,6 +9,7 @@ interface ChatInputProps {
   isProcessing?: boolean;
   onStop?: () => void;
   footer?: ReactNode;
+  autoFocus?: boolean;
 }
 
 export function ChatInput({
@@ -18,6 +19,7 @@ export function ChatInput({
   isProcessing,
   onStop,
   footer,
+  autoFocus,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -62,11 +64,12 @@ export function ChatInput({
               onKeyDown={handleKeyDown}
               placeholder={placeholder}
               disabled={disabled}
+              autoFocus={autoFocus}
               rows={1}
               className="flex-1 bg-transparent text-zinc-100 placeholder-zinc-500 resize-none outline-none text-[15px] leading-relaxed min-h-[24px] max-h-[200px]"
             />
             <div className="flex items-center gap-2 shrink-0">
-              {isProcessing ? (
+              {isProcessing && (
                 <button
                   type="button"
                   onClick={onStop}
@@ -77,12 +80,14 @@ export function ChatInput({
                     <rect width="12" height="12" rx="2" />
                   </svg>
                 </button>
-              ) : (
+              )}
+              {/* While the agent works, sending steers it instead of starting a task. */}
+              {(!isProcessing || value.trim()) && (
                 <button
                   type="submit"
                   disabled={!value.trim() || disabled}
                   className="w-8 h-8 rounded-full bg-white hover:bg-zinc-200 disabled:opacity-30 disabled:hover:bg-white flex items-center justify-center transition-colors"
-                  title="Send"
+                  title={isProcessing ? "Send to the agent" : "Send"}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="12" y1="19" x2="12" y2="5" />

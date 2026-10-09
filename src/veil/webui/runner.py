@@ -1,4 +1,4 @@
-"""One agent run at a time, driven from the web UI: state, an event log, pause/stop and human takeover.
+"""One agent run at a time, driven from the web UI: state, an event log, pause/stop, steering and human takeover.
 
 Kept free of any UI framework so it can be tested: the chat app reads `snapshot()` (structured `events`).
 Nothing here pushes to a browser.
@@ -6,6 +6,14 @@ Nothing here pushes to a browser.
 Human takeover: the person can take the browser over at any time (`take_over`), and the agent asks for it
 itself on a CAPTCHA or an unsolved challenge (RunHooks.request_human). Either way the agent is paused with
 status 'needs_human' until `hand_back`, which tells the agent what happened and resumes it.
+
+Steering: `steer(text)` queues an instruction that the agent reads at the start of its next step.
+
+History: every run keeps `run.json` (its transcript) next to its screenshots and recording.gif in
+`<runs_dir>/<run id>/`, rewritten as it goes, so the app can list and reopen past runs.
+
+Review (opt-in per run): after the agent finishes, an LLM judges the run (veil.judge); the review is saved as
+judgement.json / judgement.md and handed to the next run in the same conversation.
 """
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import secrets
 import time
 from collections.abc import Callable
@@ -22,10 +31,14 @@ from typing import Any
 
 from browser_use import ActionResult
 
+from veil import judge
 from veil.agent import Attempt, RunHooks, TaskResult, run_task
 from veil.config import Settings
+from veil.llm import build_llm
 
 log = logging.getLogger('veil.webui')
+
+RUN_ID = re.compile(r'^[A-Za-z0-9_.-]{1,80}$')
 
 
 @dataclass
@@ -38,6 +51,7 @@ class RunRequest:
 	title: str | None = None  # what the chat shows instead of `task` (e.g. a generated sign-up prompt)
 	kind: str = 'task'  # task | signup
 	on_done: Callable[[TaskResult], None] | None = None  # called with the result once the agent has finished or stopped
+	review: bool = False  # judge the run afterwards and hand the review to the next run
 
 
 def identity_info(n: int, total: int, session) -> dict[str, Any]:
@@ -67,22 +81,125 @@ def step_actions(output) -> list[dict[str, Any]]:
 	return actions
 
 
+def steer_message(text: str) -> str:
+	return (
+		f'The person watching this run sent you an instruction: "{text}". Follow it from now on; where it '
+		'conflicts with your current plan, it wins.'
+	)
+
+
+# --- run history (the folders under runs_dir) ---------------------------------------------------
+
+
+def file_url(run_dir: Path, name: str) -> str:
+	return f'/api/runs/{run_dir.name}/{name}'
+
+
+def _write_json(path: Path, data: Any) -> None:
+	tmp = path.with_suffix('.tmp')
+	tmp.write_text(json.dumps(data, indent=1, default=str), encoding='utf-8')
+	tmp.replace(path)
+
+
+def _read_json(path: Path) -> Any:
+	try:
+		return json.loads(path.read_text(encoding='utf-8'))
+	except (OSError, ValueError):
+		return None
+
+
+def _started_from_name(name: str) -> float | None:
+	try:
+		return time.mktime(time.strptime(name[:15], '%Y%m%d-%H%M%S'))
+	except ValueError:
+		return None
+
+
+def load_run(runs_dir: Path, run_id: str) -> dict[str, Any] | None:
+	"""A past run: run.json, or what an older run left behind (result.json, recording.gif)."""
+	if not RUN_ID.match(run_id):
+		return None
+	d = runs_dir / run_id
+	if not d.is_dir():
+		return None
+	run = _read_json(d / 'run.json')
+	if not isinstance(run, dict):
+		old = _read_json(d / 'result.json') or {}
+		run = {
+			'id': run_id, 'title': old.get('task') or '(older run: no transcript)', 'task': old.get('task', ''), 'kind': 'task',
+			'started': _started_from_name(run_id), 'ended': None, 'state': 'done' if old else 'unknown', 'ok': old.get('ok'),
+			'events': [], 'identity': None,
+		}
+		if old:
+			run['events'] = [
+				{'id': 0, 'type': 'task', 'text': run['title']},
+				{'id': 1, 'type': 'result', 'ok': old.get('ok'), 'stopped': False, 'output': old.get('output'), 'attempts': old.get('attempts') or []},
+			]
+	run['id'] = run_id
+	run['gif'] = file_url(d, 'recording.gif') if (d / 'recording.gif').exists() else None
+	run['result_file'] = file_url(d, 'result.json') if (d / 'result.json').exists() else None
+	run['judgement'] = run.get('judgement') or _read_json(d / 'judgement.json')
+	run['judgement_file'] = file_url(d, 'judgement.md') if (d / 'judgement.md').exists() else None
+	return run
+
+
+def list_runs(runs_dir: Path, limit: int = 300) -> list[dict[str, Any]]:
+	"""Newest first, without the transcripts."""
+	if not runs_dir.is_dir():
+		return []
+	out = []
+	for d in sorted((p for p in runs_dir.iterdir() if p.is_dir() and RUN_ID.match(p.name)), key=lambda p: p.name, reverse=True)[:limit]:
+		run = load_run(runs_dir, d.name)
+		if run:
+			j = run.get('judgement') or {}
+			out.append({
+				'id': run['id'], 'title': run.get('title', ''), 'kind': run.get('kind', 'task'), 'started': run.get('started'),
+				'state': run.get('state'), 'ok': run.get('ok'), 'has_gif': bool(run.get('gif')), 'verdict': j.get('verdict'),
+			})
+	return out
+
+
+def save_judgement(run_dir: Path, j: judge.Judgement, title: str) -> dict[str, Any]:
+	data = j.model_dump()
+	_write_json(run_dir / 'judgement.json', data)
+	(run_dir / 'judgement.md').write_text(judge.to_markdown(j, title), encoding='utf-8')
+	run = _read_json(run_dir / 'run.json')
+	if isinstance(run, dict):
+		run['judgement'] = data
+		_write_json(run_dir / 'run.json', run)
+	return data
+
+
+async def review_saved_run(runs_dir: Path, run_id: str, settings: Settings) -> dict[str, Any]:
+	"""Judge a past run on request ("Review this run")."""
+	run = load_run(runs_dir, run_id)
+	if not run or not run.get('events'):
+		raise ValueError('that run has no transcript to review')
+	j = await judge.judge_run(build_llm(settings), run['events'])
+	return save_judgement(runs_dir / run_id, j, run.get('title', ''))
+
+
 class AgentRunner:
-	"""Holds the current run. Methods are called from Gradio handlers on the same event loop."""
+	"""Holds the current run. Methods are called from the server's handlers on the same event loop."""
 
 	def __init__(self, runs_dir: Path):
 		self.runs_dir = runs_dir
 		self.events: list[dict[str, Any]] = []
 		self.identity: dict[str, Any] | None = None
 		self.human: dict[str, Any] | None = None  # what the person is asked to do while status is 'needs_human'
-		self.status = 'idle'  # idle | starting | running | paused | needs_human | stopping
+		self.status = 'idle'  # idle | starting | running | paused | needs_human | stopping | reviewing
 		self.version = 0  # bumps whenever events/identity change, so the UI only re-sends on change
 		self.run_dir: Path | None = None
 		self.result: TaskResult | None = None
+		self.last_review: dict[str, Any] | None = None  # {task, judgement} of the previous reviewed run in this conversation
 		self._task: asyncio.Task | None = None
 		self._agent = None
 		self._session = None
 		self._stop_requested = False
+		self._req: RunRequest | None = None
+		self._run_start = 0  # index in self.events where the current run begins
+		self._run_state = 'running'
+		self._steers: list[dict[str, Any]] = []  # steer events not yet handed to the agent
 
 	# --- state -------------------------------------------------------------------------------
 
@@ -90,12 +207,31 @@ class AgentRunner:
 	def busy(self) -> bool:
 		return self._task is not None and not self._task.done()
 
-	def _event(self, event_type: str, /, **data: Any) -> None:
-		self.events.append({**data, 'id': len(self.events), 'type': event_type, 'time': time.time()})
+	def _event(self, event_type: str, /, **data: Any) -> dict[str, Any]:
+		ev = {**data, 'id': len(self.events), 'type': event_type, 'time': time.time()}
+		self.events.append(ev)
 		self.version += 1
+		self._save_run()
+		return ev
 
 	def _file_url(self, path: Path) -> str | None:
-		return f'/api/runs/{path.parent.name}/{path.name}' if self.run_dir and path.parent == self.run_dir else None
+		return file_url(path.parent, path.name) if self.run_dir and path.parent == self.run_dir else None
+
+	def _save_run(self) -> None:
+		"""Write the current run's transcript, so history survives a crash or a restart."""
+		if not self.run_dir or not self._req:
+			return
+		ok = self.result.ok if self.result else None
+		data = {
+			'id': self.run_dir.name, 'title': self._req.title or self._req.task, 'task': self._req.task, 'kind': self._req.kind,
+			'started': self.events[self._run_start]['time'] if len(self.events) > self._run_start else time.time(),
+			'ended': None if self._run_state == 'running' else time.time(), 'state': self._run_state, 'ok': ok,
+			'events': self.events[self._run_start:], 'identity': self.identity,
+		}
+		try:
+			_write_json(self.run_dir / 'run.json', data)
+		except OSError as e:
+			log.debug('could not save run.json: %s', e)
 
 	def snapshot(self) -> dict[str, Any]:
 		"""Everything the chat app shows, as JSON-ready data."""
@@ -107,9 +243,11 @@ class AgentRunner:
 			'events': self.events,
 			'identity': self.identity,
 			'human': self.human,
+			'run_id': self.run_dir.name if self.run_dir else None,
 			'browser_open': self._session is not None and getattr(self._session, 'browser', None) is not None,
 			'gif': self._file_url(Path(gif)) if gif and self.status == 'idle' else None,
 			'result_file': self._file_url(Path(res)) if res else None,
+			'has_review': self.last_review is not None,
 		}
 
 	# --- control -----------------------------------------------------------------------------
@@ -120,10 +258,25 @@ class AgentRunner:
 		self.run_dir = self.runs_dir / f'{time.strftime("%Y%m%d-%H%M%S")}-{secrets.token_hex(3)}'
 		self.run_dir.mkdir(parents=True, exist_ok=True)
 		self.result, self._agent, self._session, self._stop_requested = None, None, None, False
-		self.human, self.identity = None, None
+		self.human, self.identity, self._steers = None, None, []
+		self._req, self._run_start, self._run_state = req, len(self.events), 'running'
 		self.status = 'starting'
 		self._event('task', text=req.title or req.task, kind=req.kind, run=self.run_dir.name)
+		if req.review and self.last_review:
+			# The previous run in this conversation was reviewed: the agent reads that review in its system prompt.
+			note = judge.next_run_message(self.last_review['judgement'], self.last_review['task'])
+			prev = req.agent_kwargs.get('extend_system_message')
+			req.agent_kwargs['extend_system_message'] = f'{prev}\n\n{note}' if prev else note
+			self._event('notice', level='info', text='Using the review of the previous run.')
 		self._task = asyncio.create_task(self._run(req))
+
+	def steer(self, text: str) -> bool:
+		"""An instruction for the agent mid-run; it reads it at the start of its next step."""
+		text = (text or '').strip()[:2000]
+		if not text or not self.busy or self.status in ('stopping', 'reviewing'):
+			return False
+		self._steers.append(self._event('steer', text=text, delivered=False))
+		return True
 
 	def pause_resume(self) -> None:
 		if self.status == 'needs_human':
@@ -175,6 +328,7 @@ class AgentRunner:
 				break
 		self.human = None
 		self.version += 1
+		self._save_run()
 
 	def stop(self) -> None:
 		if not self.busy:
@@ -186,7 +340,7 @@ class AgentRunner:
 		if self._agent:
 			self._agent.stop()  # finishes the current step, then run() returns
 		else:
-			self._task.cancel()  # still launching the identity: nothing to finish
+			self._task.cancel()  # launching the identity or reviewing: nothing to finish
 
 	async def clear(self) -> None:
 		if self.busy:
@@ -197,7 +351,8 @@ class AgentRunner:
 				self._task.cancel()
 				# Let the run finish unwinding first, or its last message lands in the cleared chat.
 				await asyncio.wait({self._task}, timeout=15)
-		self.events, self.identity, self.human, self.result = [], None, None, None
+		self.events, self.identity, self.human, self.result, self.last_review = [], None, None, None, None
+		self.run_dir, self._req, self._run_start = None, None, 0
 		self.status = 'idle'
 		self.version += 1
 
@@ -223,6 +378,29 @@ class AgentRunner:
 		if not self._agent or self._stop_requested or self.status == 'needs_human':
 			return  # nothing to pause, or the person already has the browser
 		self._ask_human(reason, detail)
+
+	async def _on_step_start(self, agent) -> None:
+		"""Hand queued steers to the agent: they land in the prompt this step is about to build."""
+		if not self._steers:
+			return
+		steers, self._steers = self._steers, []
+		state = agent.state
+		state.last_result = [*(state.last_result or []), *(ActionResult(long_term_memory=steer_message(s['text'])) for s in steers)]
+		for s in steers:
+			s['delivered'] = True
+		self.version += 1
+		self._save_run()
+
+	def _take_followups(self) -> list[str]:
+		"""Steers that arrived as the agent was finishing: the agent carries on with them as a follow-up."""
+		if not self._steers or self._stop_requested:
+			return []
+		steers, self._steers = self._steers, []
+		for s in steers:
+			s.update(delivered=True, followup=True)
+		self.version += 1
+		self._save_run()
+		return [s['text'] for s in steers]
 
 	async def _on_attempt(self, n: int, total: int, session, agent) -> None:
 		self._session, self._agent = session, agent
@@ -259,10 +437,29 @@ class AgentRunner:
 		elif attempt.outcome == 'error':
 			self._event('notice', level='error', text=f'Attempt {n} crashed: {attempt.detail}')
 
+	async def _review(self, req: RunRequest) -> None:
+		"""Judge the run that just ended; show it, save it, and keep it for the next run."""
+		self.status = 'reviewing'
+		self.version += 1
+		run_events = self.events[self._run_start:]
+		try:
+			j = await judge.judge_run(build_llm(req.settings), run_events)
+		except asyncio.CancelledError:
+			self._event('notice', level='info', text='Review skipped.')
+			return
+		except Exception as e:
+			log.warning('run review failed: %s', e)
+			self._event('notice', level='error', text=f'Could not review the run: {type(e).__name__}: {e}')
+			return
+		data = save_judgement(self.run_dir, j, req.title or req.task) if self.run_dir else j.model_dump()
+		self.last_review = {'task': req.title or req.task, 'judgement': data}
+		self._event('judgement', judgement=data, file=self._file_url(self.run_dir / 'judgement.md') if self.run_dir else None)
+
 	async def _run(self, req: RunRequest) -> None:
 		hooks = RunHooks(
 			on_attempt=self._on_attempt, on_step=self._on_step, on_attempt_end=self._on_attempt_end,
-			stop_requested=lambda: self._stop_requested, request_human=self._on_request_human,
+			stop_requested=lambda: self._stop_requested, request_human=self._on_request_human, on_step_start=self._on_step_start,
+			take_followups=self._take_followups,
 		)
 		kwargs = dict(req.agent_kwargs)
 		if self.run_dir:
@@ -283,13 +480,23 @@ class AgentRunner:
 				(self.run_dir / 'result.json').write_text(
 					json.dumps({'task': req.task, 'ok': r.ok, 'output': r.output, 'attempts': [a.__dict__ for a in r.attempts]}, indent=2)
 				)
+			self._run_state = 'stopped' if self._stop_requested else 'done'
+			if req.review and not self._stop_requested:
+				await self._review(req)
 		except asyncio.CancelledError:
+			self._run_state = 'stopped'
 			self._event('result', ok=False, stopped=True, output=None, attempts=[])
 		except Exception as e:
 			log.exception('run failed')
+			self._run_state = 'failed'
 			self._event('notice', level='error', text=f'Run failed: {type(e).__name__}: {e}')
 		finally:
-			self._agent, self._session, self.human = None, None, None
+			for s in self._steers:  # never reached the agent
+				s['undelivered'] = True
+			self._agent, self._session, self.human, self._steers = None, None, None, []
+			if self._run_state == 'running':
+				self._run_state = 'done'
+			self._save_run()
 			self.status = 'idle'
 			self.version += 1
 

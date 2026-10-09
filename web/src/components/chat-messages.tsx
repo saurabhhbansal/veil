@@ -3,11 +3,12 @@
 // Adapted from chat-ui-example's chat-messages.tsx: a turn is the task, then what happened in order
 // (identities tried, steps, blocks, human handoffs) and the result.
 import { useState } from "react";
-import { AlertTriangle, CircleX, OctagonX, ShieldAlert } from "lucide-react";
+import { AlertTriangle, CircleX, CornerDownRight, Info, OctagonX, ShieldAlert } from "lucide-react";
 import type { ConversationTurn, EventOf, RunEvent, RunStatus, Snapshot } from "@/lib/types";
 import { HumanLine, HumanPrompt } from "./human-card";
 import { IdentityLine } from "./identity-card";
 import { Markdown } from "./markdown";
+import { ReviewCard } from "./review-card";
 import { StepSection } from "./step-section";
 import { ThinkingIndicator } from "./thinking-indicator";
 
@@ -15,10 +16,11 @@ const WAITING: Partial<Record<RunStatus, string>> = {
   starting: "Launching identity: proxy → geo → device → Fortress…",
   running: "Thinking…",
   stopping: "Stopping after the current step…",
+  reviewing: "Reviewing the run…",
 };
 
 function Notice({ event }: { event: EventOf<"notice"> }) {
-  const Icon = event.level === "blocked" ? ShieldAlert : event.level === "error" ? CircleX : AlertTriangle;
+  const Icon = event.level === "blocked" ? ShieldAlert : event.level === "error" ? CircleX : event.level === "info" ? Info : AlertTriangle;
   const color = event.level === "blocked" ? "text-orange-400" : event.level === "error" ? "text-red-400" : "text-zinc-400";
   return (
     <div className="flex items-start gap-2 text-[13px] py-1">
@@ -77,6 +79,26 @@ function Item({ ev, inProgress }: { ev: RunEvent; inProgress: boolean }) {
       return ev.resolved ? <HumanLine event={ev} /> : null; // the open request is drawn below, with its button
     case "result":
       return <Result event={ev} />;
+    case "steer":
+      return (
+        <div className="flex justify-end">
+          <div className="max-w-[480px] rounded-2xl border border-zinc-700 px-3.5 py-2 text-[14px] text-zinc-200">
+            <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 mb-0.5">
+              <CornerDownRight className="w-3 h-3" />
+              {ev.followup
+                ? "Steer · the agent carried on with it"
+                : ev.delivered
+                  ? "Steer · read by the agent"
+                  : ev.undelivered
+                    ? "Steer · the run ended first"
+                    : "Steer · at the agent's next step"}
+            </div>
+            <span className="whitespace-pre-wrap break-words">{ev.text}</span>
+          </div>
+        </div>
+      );
+    case "judgement":
+      return <ReviewCard judgement={ev.judgement} file={ev.file} />;
     default:
       return null;
   }

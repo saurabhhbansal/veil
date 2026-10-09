@@ -70,6 +70,13 @@ Type a task (the icons under the box set the LLM, sticky identity, engine, geo-m
   (`request_human_help`) for 2FA codes or logins it has no credentials for. If a challenge is still there after you
   had a go, veil rotates to a fresh identity as before. Each page is handed to you once.
 - **Stop / Pause:** Stop finishes the current step and doesn't count against the proxy.
+- **Steer:** while the agent works, type in the chat box to give it an instruction. It reads it at the start of its
+  next step; if it was already finishing, it carries on with it in the same browser.
+- **Run history (left sidebar):** every run is kept in `~/.veil/runs/<id>/` (`run.json` transcript, step screenshots,
+  `recording.gif`, `result.json`). Click a run to reopen it read-only, with its recording and identity.
+- **Review (toggle in the settings bar, off by default):** after each run an LLM judges what went wrong and how to fix
+  it, saves `judgement.md` / `judgement.json` with the run, shows it in the chat, and hands its advice to the next run
+  in the same chat. Past runs have a *Review this run* button.
 - **Accounts (top right):** a side panel for `veil signup`. **Profiles** edits your own details (`profiles.csv`, one
   profile per email you own); **Sign-ups** starts a sign-up on a site and lists where each profile was used, with status,
   notes, retry and the password veil used. Passwords never reach the page unless you press *Show password*, and the

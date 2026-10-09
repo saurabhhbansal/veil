@@ -18,6 +18,8 @@ const EMPTY: Snapshot = {
   browser_open: false,
   gif: null,
   result_file: null,
+  run_id: null,
+  has_review: false,
 };
 
 interface RunContextType {
@@ -27,6 +29,7 @@ interface RunContextType {
   error: string | null;
   setError: (e: string | null) => void;
   start: (task: string) => Promise<boolean>;
+  steer: (text: string) => Promise<boolean>;
   startSignup: (url: string, profileId: string) => Promise<boolean>;
   stop: () => Promise<void>;
   pauseResume: () => Promise<void>;
@@ -38,7 +41,8 @@ interface RunContextType {
 const RunContext = createContext<RunContextType | null>(null);
 
 export function RunProvider({ children }: { children: ReactNode }) {
-  const { uiValues } = useSettings();
+  const { uiValues, settings } = useSettings();
+  const review = !!settings?.review;
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,28 +95,42 @@ export function RunProvider({ children }: { children: ReactNode }) {
     async (task: string) => {
       setError(null);
       try {
-        accept(await api.run(task, uiValues()));
+        accept(await api.run(task, uiValues(), review));
         return true;
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         return false;
       }
     },
-    [accept, uiValues],
+    [accept, uiValues, review],
+  );
+
+  const steer = useCallback(
+    async (text: string) => {
+      setError(null);
+      try {
+        accept(await api.steer(text));
+        return true;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return false;
+      }
+    },
+    [accept],
   );
 
   const startSignup = useCallback(
     async (url: string, profileId: string) => {
       setError(null);
       try {
-        accept(await api.signup(url, profileId, uiValues()));
+        accept(await api.signup(url, profileId, uiValues(), review));
         return true;
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         return false;
       }
     },
-    [accept, uiValues],
+    [accept, uiValues, review],
   );
 
   const value = useMemo<RunContextType>(
@@ -123,6 +141,7 @@ export function RunProvider({ children }: { children: ReactNode }) {
       error,
       setError,
       start,
+      steer,
       startSignup,
       stop: wrap(api.stop),
       pauseResume: wrap(api.pause),
@@ -130,7 +149,7 @@ export function RunProvider({ children }: { children: ReactNode }) {
       handBack: (note?: string) => wrap(() => api.handBack(note))(),
       clear: wrap(api.clear),
     }),
-    [snap, connected, error, start, startSignup, wrap],
+    [snap, connected, error, start, steer, startSignup, wrap],
   );
 
   return <RunContext.Provider value={value}>{children}</RunContext.Provider>;

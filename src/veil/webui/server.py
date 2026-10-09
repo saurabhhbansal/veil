@@ -9,6 +9,9 @@ Everything runs on this PC: the agent, Fortress, and this server. No hosted brow
     POST /api/stop | /api/pause | /api/clear
     POST /api/takeover          the person takes the browser (pauses the agent)
     POST /api/handback          {note} the person is done; the agent carries on
+    POST /api/steer             {text} an instruction the agent reads at its next step
+    GET  /api/runs              past runs, newest first; GET /api/runs/<id> one run's transcript, recording, review
+    POST /api/runs/<id>/review  judge a past run now (the "Review runs" toggle does it after each run)
     WS   /api/live              live view: JPEG frames out, mouse/keyboard in (see live.py)
     GET  /api/runs/<run>/<file> step screenshots, recording.gif, result.json
     GET  /api/accounts          your sign-up profiles and the sign-up log (passwords left out)
@@ -39,7 +42,7 @@ from veil.config import Settings
 from veil.llm import build_llm
 from veil.webui.live import LiveView
 from veil.webui.manager import ENGINES, PROVIDERS, saved_identities, settings_from_ui
-from veil.webui.runner import AgentRunner, RunRequest
+from veil.webui.runner import AgentRunner, RunRequest, list_runs, load_run, review_saved_run
 
 log = logging.getLogger('veil.webui.server')
 
@@ -144,7 +147,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		except ValueError as e:
 			return [], str(e)
 
-	def start_signup(raw_url: str, profile_id: str | None, values: dict[str, Any], request_text: str | None = None) -> dict:
+	def start_signup(raw_url: str, profile_id: str | None, values: dict[str, Any], request_text: str | None = None, review: bool = False) -> dict:
 		"""Sign up on a site as one of your profiles: its details as secrets, its own sticky identity, status logged."""
 		if runner.busy:
 			raise HTTPException(409, 'a task is already running: stop it first')
@@ -172,7 +175,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		runner.start(RunRequest(
 			task=accounts.build_task(url, typed, ask_human=True, request=request_text),
 			title=f'{request_text}\n\n→ Signing up at {site} as {profile["id"]} ({profile["email"]})' if request_text else f'Sign up at {site} as {profile["id"]} ({profile["email"]})',
-			kind='signup', settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs, on_done=done,
+			kind='signup', settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs, on_done=done, review=review,
 		))
 		return runner.snapshot()
 
@@ -185,6 +188,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		if runner.busy:
 			raise HTTPException(409, 'a task is already running: stop it first')
 		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
+		review = bool(body.get('review'))
 		try:
 			settings, identity, max_steps, agent_kwargs = settings_from_ui(values, env)
 		except (ValueError, RuntimeError) as e:
@@ -200,9 +204,9 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 			if intent:
 				if not profiles:
 					raise HTTPException(400, 'To sign up with your details, add a profile under Accounts (top right) first.')
-				return start_signup(intent.url, intent.profile_id, values, request_text=task)
+				return start_signup(intent.url, intent.profile_id, values, request_text=task, review=review)
 		try:
-			runner.start(RunRequest(task=task, settings=settings, identity=identity, max_steps=max_steps, agent_kwargs=agent_kwargs))
+			runner.start(RunRequest(task=task, settings=settings, identity=identity, max_steps=max_steps, agent_kwargs=agent_kwargs, review=review))
 		except (ValueError, RuntimeError) as e:
 			raise HTTPException(400, str(e)) from e
 		return runner.snapshot()
@@ -227,6 +231,36 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		body = await request.json() if request.headers.get('content-type', '').startswith('application/json') else {}
 		runner.hand_back(str(body.get('note') or '')[:2000])
 		return runner.snapshot()
+
+	@app.post('/api/steer')
+	async def steer(request: Request):
+		if not runner.steer(str((await request.json()).get('text') or '')):
+			raise HTTPException(409, 'nothing to steer: no run in progress')
+		return runner.snapshot()
+
+	@app.get('/api/runs')
+	async def runs():
+		return {'runs': await asyncio.to_thread(list_runs, runner.runs_dir)}
+
+	@app.get('/api/runs/{run_id}')
+	async def run_detail(run_id: str):
+		run = await asyncio.to_thread(load_run, runner.runs_dir, run_id)
+		if not run:
+			raise HTTPException(404, 'no such run')
+		return run
+
+	@app.post('/api/runs/{run_id}/review')
+	async def review_run(run_id: str, request: Request):
+		body = await request.json() if request.headers.get('content-type', '').startswith('application/json') else {}
+		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
+		if runner.busy and runner.run_dir and runner.run_dir.name == run_id:
+			raise HTTPException(409, 'that run is still going')
+		try:
+			settings = settings_from_ui(values, env)[0]
+			await review_saved_run(runner.runs_dir, run_id, settings)
+		except (ValueError, RuntimeError) as e:
+			raise HTTPException(400, str(e)) from e
+		return await asyncio.to_thread(load_run, runner.runs_dir, run_id)
 
 	@app.post('/api/clear')
 	async def clear():
@@ -277,7 +311,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 	async def signup(request: Request):
 		body = await request.json()
 		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
-		return start_signup(str(body.get('url') or ''), str(body.get('profile_id') or '') or None, values)
+		return start_signup(str(body.get('url') or ''), str(body.get('profile_id') or '') or None, values, review=bool(body.get('review')))
 
 	@app.get('/api/runs/{run}/{name}')
 	async def run_file(run: str, name: str):

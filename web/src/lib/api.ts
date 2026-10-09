@@ -1,6 +1,6 @@
 // The local veil server (`uv run veil ui`). In the built app it's the same origin; under `npm run dev`
 // (port 3000) it's `veil ui --dev` on 7788 unless NEXT_PUBLIC_VEIL_API says otherwise.
-import type { AccountsState, ProfileDraft, Snapshot, VeilConfig } from "./types";
+import type { AccountsState, ProfileDraft, RunDetail, RunSummary, Snapshot, VeilConfig } from "./types";
 
 export function apiBase(): string {
   if (process.env.NEXT_PUBLIC_VEIL_API) return process.env.NEXT_PUBLIC_VEIL_API.replace(/\/$/, "");
@@ -41,7 +41,11 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 export const api = {
   config: () => call<VeilConfig>("/api/config"),
   state: () => call<Snapshot>("/api/state"),
-  run: (task: string, values: Record<string, unknown>) => call<Snapshot>("/api/run", { task, values }),
+  run: (task: string, values: Record<string, unknown>, review: boolean) => call<Snapshot>("/api/run", { task, values, review }),
+  steer: (text: string) => call<Snapshot>("/api/steer", { text }),
+  runs: () => call<{ runs: RunSummary[] }>("/api/runs"),
+  runDetail: (id: string) => call<RunDetail>(`/api/runs/${encodeURIComponent(id)}`),
+  reviewRun: (id: string, values: Record<string, unknown>) => call<RunDetail>(`/api/runs/${encodeURIComponent(id)}/review`, { values }),
   stop: () => call<Snapshot>("/api/stop", {}),
   pause: () => call<Snapshot>("/api/pause", {}),
   takeOver: () => call<Snapshot>("/api/takeover", {}),
@@ -50,6 +54,6 @@ export const api = {
   accounts: () => call<AccountsState>("/api/accounts"),
   saveProfiles: (profiles: Omit<ProfileDraft, "key" | "has_password">[]) => call<AccountsState>("/api/accounts/profiles", { profiles }),
   reveal: (site: string) => call<{ site: string; email: string; password: string }>("/api/accounts/reveal", { site }),
-  signup: (url: string, profileId: string, values: Record<string, unknown>) =>
-    call<Snapshot>("/api/accounts/signup", { url, profile_id: profileId || null, values }),
+  signup: (url: string, profileId: string, values: Record<string, unknown>, review: boolean) =>
+    call<Snapshot>("/api/accounts/signup", { url, profile_id: profileId || null, values, review }),
 };

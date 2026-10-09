@@ -55,6 +55,11 @@ also has a `request_human_help` action. hand_back() injects an ActionResult note
 Not Browser Use Cloud: veil never uses hosted browser services (user decision, 2026-10-09).
 Accounts in the app: /api/accounts* (server.py) over accounts.py; sign-ups run through AgentRunner (RunRequest.title/kind/
 on_done records the status). Passwords leave the server only via /api/accounts/reveal.
+Runs: runner.py writes <runs_dir>/<id>/run.json on every event (list_runs/load_run read it; older runs fall back to
+result.json). Steers: RunHooks.on_step_start injects them into agent.state.last_result; ones that arrive as the agent
+finishes go through RunHooks.take_followups -> agent.add_new_task + another agent.run in the same browser.
+Review: judge.py (opt-in RunRequest.review); runner keeps last_review and appends judge.next_run_message to the next
+run's extend_system_message.
 
 ## Status (Windows PC, 2026-10-09)
 

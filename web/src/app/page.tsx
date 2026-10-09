@@ -6,6 +6,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, FileJson, MessageSquare, MonitorPlay, Plus, UserRound, VenetianMask } from "lucide-react";
 import { AccountsPanel } from "@/components/accounts-panel";
+import { RunView } from "@/components/run-view";
+import { RunsSidebar } from "@/components/runs-sidebar";
 import { BrowserPanel } from "@/components/browser-panel";
 import { ChatInput } from "@/components/chat-input";
 import { ChatMessages } from "@/components/chat-messages";
@@ -29,6 +31,7 @@ const STATUS: Record<RunStatus, { label: string; dot: string }> = {
   paused: { label: "Paused", dot: "bg-zinc-400" },
   needs_human: { label: "Needs you", dot: "bg-amber-400 animate-pulse" },
   stopping: { label: "Stopping", dot: "bg-orange-400 animate-pulse" },
+  reviewing: { label: "Reviewing the run", dot: "bg-blue-400 animate-pulse" },
 };
 
 function ErrorLine() {
@@ -116,7 +119,7 @@ function Home({ onAccounts }: { onAccounts: () => void }) {
 }
 
 function SessionView({ onAccounts }: { onAccounts: () => void }) {
-  const { snap, turns, start, stop, clear, handBack } = useRun();
+  const { snap, turns, start, stop, clear, handBack, steer } = useRun();
   const chatRef = useRef<HTMLDivElement>(null);
   const [mobilePane, setMobilePane] = useState<"chat" | "browser">("chat");
   const status = STATUS[snap.status];
@@ -140,7 +143,7 @@ function SessionView({ onAccounts }: { onAccounts: () => void }) {
       {/* Chat column */}
       <div className={`flex-1 flex-col min-w-0 ${mobilePane === "chat" ? "flex" : "hidden"} lg:flex`}>
         <header className="h-11 border-b border-zinc-800 flex items-center px-4 gap-3">
-          <span className="inline-flex items-center gap-1.5 text-zinc-300 text-[13px] font-medium">
+          <span className="md:hidden inline-flex items-center gap-1.5 text-zinc-300 text-[13px] font-medium">
             <VenetianMask className="w-4 h-4" /> veil
           </span>
           <span className="inline-flex items-center gap-1.5 text-[12px] text-zinc-400">
@@ -190,16 +193,19 @@ function SessionView({ onAccounts }: { onAccounts: () => void }) {
         <div className="max-w-2xl w-full mx-auto">
           <ErrorLine />
           <ChatInput
-            onSend={(text) => (needsHuman ? handBack(text) : start(text))}
+            onSend={(text) => (needsHuman ? handBack(text) : snap.busy ? steer(text) : start(text))}
             isProcessing={snap.busy && !needsHuman}
-            disabled={snap.busy && !needsHuman}
+            disabled={snap.status === "stopping" || snap.status === "reviewing"}
+            autoFocus
             onStop={stop}
             placeholder={
               needsHuman
                 ? "Note for the agent, then Enter to hand back…"
-                : snap.busy
-                  ? "The agent is working…"
-                  : "Send a new task…"
+                : snap.status === "reviewing"
+                  ? "Reviewing the run…"
+                  : snap.busy
+                    ? "Steer the agent, e.g. \"use the search box instead\"…"
+                    : "Send a new task…"
             }
             footer={!snap.busy ? <SettingsBar /> : undefined}
           />
@@ -222,8 +228,9 @@ function SessionView({ onAccounts }: { onAccounts: () => void }) {
 }
 
 export default function Page() {
-  const { snap, connected } = useRun();
+  const { snap, connected, clear } = useRun();
   const [accountsOpen, setAccountsOpen] = useState(false);
+  const [viewing, setViewing] = useState<string | null>(null); // a past run; null = the live chat
   if (!connected && snap.version < 0) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center">
@@ -233,10 +240,31 @@ export default function Page() {
     );
   }
   const openAccounts = () => setAccountsOpen(true);
+  const reviews = snap.events.filter((e) => e.type === "judgement").length;
+  const past = viewing && viewing !== snap.run_id ? viewing : null;
   return (
-    <>
-      {snap.events.length ? <SessionView onAccounts={openAccounts} /> : <Home onAccounts={openAccounts} />}
+    <div className="flex h-screen overflow-hidden">
+      <RunsSidebar
+        selectedId={past}
+        liveRunId={snap.run_id}
+        busy={snap.busy}
+        refreshKey={`${snap.run_id}-${snap.busy}-${reviews}`}
+        onSelect={setViewing}
+        onNew={() => {
+          setViewing(null);
+          if (!snap.busy && snap.events.length) void clear(); // the finished runs stay in the sidebar
+        }}
+      />
+      <main className="flex-1 min-w-0 h-screen overflow-y-auto">
+        {past ? (
+          <RunView runId={past} liveBusy={snap.busy} onBack={() => setViewing(null)} />
+        ) : snap.events.length ? (
+          <SessionView onAccounts={openAccounts} />
+        ) : (
+          <Home onAccounts={openAccounts} />
+        )}
+      </main>
       <AccountsPanel open={accountsOpen} onClose={() => setAccountsOpen(false)} />
-    </>
+    </div>
   );
 }

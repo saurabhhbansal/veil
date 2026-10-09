@@ -1,6 +1,6 @@
 // Shapes of the local veil server's API (src/veil/webui/runner.py snapshot() and server.py /api/config).
 
-export type RunStatus = "idle" | "starting" | "running" | "paused" | "needs_human" | "stopping";
+export type RunStatus = "idle" | "starting" | "running" | "paused" | "needs_human" | "stopping" | "reviewing";
 
 export interface ExitInfo {
   ip: string;
@@ -79,7 +79,45 @@ export type RunEvent = BaseEvent &
         outcome?: string;
       }
     | { type: "result"; ok: boolean; stopped: boolean; output: string | null; attempts: Attempt[] }
+    | { type: "steer"; text: string; delivered: boolean; undelivered?: boolean; followup?: boolean }
+    | { type: "judgement"; judgement: Judgement; file?: string | null }
   );
+
+export interface Judgement {
+  verdict: "success" | "partial" | "failure";
+  summary: string;
+  what_went_wrong: string[];
+  fixes: string[];
+  advice_for_next_run: string;
+}
+
+export interface RunSummary {
+  id: string;
+  title: string;
+  kind: string;
+  started: number | null;
+  state: string | null;
+  ok: boolean | null;
+  has_gif: boolean;
+  verdict: Judgement["verdict"] | null;
+}
+
+export interface RunDetail {
+  id: string;
+  title: string;
+  task: string;
+  kind: string;
+  started: number | null;
+  ended: number | null;
+  state: string | null;
+  ok: boolean | null;
+  events: RunEvent[];
+  identity: Identity | null;
+  gif: string | null;
+  result_file: string | null;
+  judgement: Judgement | null;
+  judgement_file: string | null;
+}
 
 export type EventOf<T extends RunEvent["type"]> = Extract<RunEvent, { type: T }>;
 
@@ -101,6 +139,8 @@ export interface Snapshot {
   browser_open: boolean;
   gif: string | null;
   result_file: string | null;
+  run_id: string | null;
+  has_review: boolean;
 }
 
 export interface VeilConfig {

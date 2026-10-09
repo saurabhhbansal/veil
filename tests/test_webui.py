@@ -274,3 +274,97 @@ async def test_chat_task_asking_to_sign_up_runs_as_a_signup(tmp_path, monkeypatc
 		await c.post('/api/run', json={'task': 'find the cheapest SSD on amazon.in'})
 		await asyncio.wait_for(app.state.runner._task, timeout=2)
 		assert 'sensitive_data' not in seen['kwargs'] and seen['identity'] is None  # ordinary tasks are untouched
+
+
+
+@pytest.mark.asyncio
+async def test_steer_reaches_the_agent_at_its_next_step_and_runs_are_saved(tmp_path, monkeypatch):
+	agent = _PausableAgent()
+	steered = asyncio.Event()
+
+	async def fake_run_task(task, settings, identity_name=None, max_steps=None, *, hooks, agent_kwargs):
+		session = SimpleNamespace(persona=None, exit=None, proxy=None, identity=None, settings=settings, browser=None)
+		await hooks.on_attempt(1, 1, session, agent)
+		await steered.wait()
+		await hooks.on_step_start(agent)  # the next step begins
+		return TaskResult(ok=True, output='done', attempts=[])
+
+	monkeypatch.setattr(runner_mod, 'run_task', fake_run_task)
+	r = AgentRunner(runs_dir=tmp_path)
+	assert not r.steer('too early')  # nothing running
+	r.start(RunRequest(task='find it', settings=Settings()))
+	await asyncio.sleep(0.05)
+	assert r.steer('use the search box instead')
+	steered.set()
+	await asyncio.wait_for(r._task, timeout=2)
+	memo = agent.state.last_result[-1].long_term_memory
+	assert 'use the search box instead' in memo and 'it wins' in memo
+	steer = next(e for e in r.events if e['type'] == 'steer')
+	assert steer['delivered']
+
+	runs = runner_mod.list_runs(tmp_path)
+	assert len(runs) == 1 and runs[0]['title'] == 'find it' and runs[0]['state'] == 'done' and runs[0]['ok'] is True
+	saved = runner_mod.load_run(tmp_path, runs[0]['id'])
+	assert [e['type'] for e in saved['events']] == ['task', 'attempt', 'steer', 'result']
+	assert runner_mod.load_run(tmp_path, '../etc') is None
+
+
+def test_older_runs_without_a_transcript_still_list(tmp_path):
+	d = tmp_path / '20261009-101347-f60e5a'
+	d.mkdir()
+	(d / 'result.json').write_text(json.dumps({'task': 'old task', 'ok': False, 'output': None, 'attempts': []}))
+	(d / 'recording.gif').write_bytes(b'GIF89a')
+	(run,) = runner_mod.list_runs(tmp_path)
+	assert run['title'] == 'old task' and run['has_gif'] and run['started']
+	detail = runner_mod.load_run(tmp_path, run['id'])
+	assert detail['gif'] == '/api/runs/20261009-101347-f60e5a/recording.gif' and detail['events'][-1]['type'] == 'result'
+
+
+@pytest.mark.asyncio
+async def test_review_is_saved_and_handed_to_the_next_run(tmp_path, monkeypatch):
+	from veil import judge
+
+	seen = []
+
+	async def fake_run_task(task, settings, identity_name=None, max_steps=None, *, hooks, agent_kwargs):
+		seen.append(agent_kwargs)
+		return TaskResult(ok=False, output='could not find the price', attempts=[])
+
+	async def fake_judge(llm, events):
+		assert events[0]['type'] == 'task' and events[-1]['type'] == 'result'
+		return judge.Judgement(
+			verdict='failure', summary='Gave up on the search page.', what_went_wrong=['Never opened the product page'],
+			fixes=['Ask for the product page'], advice_for_next_run='Open the first product result before reading prices.',
+		)
+
+	monkeypatch.setattr(runner_mod, 'run_task', fake_run_task)
+	monkeypatch.setattr(runner_mod, 'build_llm', lambda s: object())
+	monkeypatch.setattr(judge, 'judge_run', fake_judge)
+	r = AgentRunner(runs_dir=tmp_path)
+	r.start(RunRequest(task='price of X', settings=Settings(), review=True))
+	await asyncio.wait_for(r._task, timeout=2)
+	assert r.events[-1]['type'] == 'judgement' and r.events[-1]['judgement']['verdict'] == 'failure'
+	assert 'Never opened the product page' in (r.run_dir / 'judgement.md').read_text()
+	assert runner_mod.list_runs(tmp_path)[0]['verdict'] == 'failure'
+
+	r.start(RunRequest(task='price of Y', settings=Settings(), review=True))
+	await asyncio.wait_for(r._task, timeout=2)
+	assert 'Open the first product result' in seen[-1]['extend_system_message']
+	r.start(RunRequest(task='price of Z', settings=Settings()))  # toggle off: nothing is passed on
+	await asyncio.wait_for(r._task, timeout=2)
+	assert 'extend_system_message' not in seen[-1]
+
+
+def test_review_transcript_is_compact_text():
+	from veil import judge
+
+	events = [
+		{'type': 'task', 'text': 'find X'},
+		{'type': 'step', 'n': 1, 'url': 'https://a.test', 'next_goal': 'search', 'actions': [{'name': 'input', 'args': {'text': 'X'}}]},
+		{'type': 'steer', 'text': 'try page 2'},
+		{'type': 'result', 'ok': False, 'stopped': False, 'output': 'not found', 'attempts': []},
+	]
+	text = judge.transcript(events)
+	assert 'TASK: find X' in text and 'STEP 1 at https://a.test' in text and 'PERSON STEERED: try page 2' in text and 'did not finish' in text
+	md = judge.to_markdown(judge.Judgement(verdict='partial', summary='s', what_went_wrong=['a'], fixes=['b'], advice_for_next_run='c'), 'find X')
+	assert '## What went wrong\n- a' in md and '## Passed to the next run\nc' in md

@@ -17,6 +17,7 @@ export interface VeilSettings {
   maxAttempts: number;
   maxSteps: number;
   useVision: boolean;
+  review: boolean; // judge each run afterwards and pass the review to the next run
 }
 
 interface SettingsContextType {
@@ -42,6 +43,7 @@ function fromConfig(c: VeilConfig): VeilSettings {
     maxAttempts: c.max_attempts,
     maxSteps: c.max_steps,
     useVision: true,
+    review: false,
   };
 }
 

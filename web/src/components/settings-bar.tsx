@@ -3,7 +3,7 @@
 // Adapted from chat-ui-example's model-selector.tsx (IconDropdown / DropdownRow). The Browser Use Cloud
 // pickers (BU models, cloud profiles, workspaces, proxy countries) are replaced by veil's run settings.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Cpu, Fingerprint, Globe, Monitor, ShieldCheck } from "lucide-react";
+import { Check, Cpu, Fingerprint, Globe, Monitor, Scale, ShieldCheck } from "lucide-react";
 import { useSettings } from "@/context/settings-context";
 
 const ENGINE_NOTES: Record<string, string> = {
@@ -265,6 +265,25 @@ export function SettingsBar({ disabled }: { disabled?: boolean }) {
         </div>
         <Toggle label="Match timezone & language to exit IP" checked={settings.geoMatch} onChange={(v) => update({ geoMatch: v })} />
         <NumberRow label="Identities to try on a block" value={settings.maxAttempts} min={1} max={10} onChange={(v) => update({ maxAttempts: v })} />
+      </IconDropdown>
+
+      {/* Review */}
+      <IconDropdown
+        icon={<Scale size={16} />}
+        title={settings.review ? "Review: on (each run is judged)" : "Review: off"}
+        activeColor="green"
+        isActive={settings.review}
+        open={openDropdown === "review"}
+        onToggle={() => toggle("review")}
+        onClose={close}
+        width="w-[280px]"
+      >
+        <Toggle
+          label="Review each run"
+          hint="After a run, an LLM judges what went wrong and how to fix it, saves it with the run, and hands it to the next run. One extra LLM call per run."
+          checked={settings.review}
+          onChange={(v) => update({ review: v })}
+        />
       </IconDropdown>
 
       {/* Window */}

@@ -58,6 +58,10 @@ class RunHooks:
 	on_attempt_end: Callable[[int, Attempt], Awaitable[None] | None] | None = None
 	stop_requested: Callable[[], bool] | None = None
 	request_human: Callable[[str, dict[str, Any]], Awaitable[None] | None] | None = None
+	# on_step_start(agent) runs before each step builds its prompt: the place to hand the agent a steer.
+	on_step_start: Callable[[Agent], Awaitable[None] | None] | None = None
+	# take_followups() -> instructions that arrived too late for a step; the same agent continues with them.
+	take_followups: Callable[[], list[str]] | None = None
 
 
 async def _call(fn, *args) -> None:
@@ -173,7 +177,19 @@ async def run_task(
 					kwargs['tools'] = _human_tools(hooks.request_human)
 				agent = Agent(task=task, llm=llm, browser_session=session.browser, register_new_step_callback=hooks.on_step, **kwargs)
 				await _call(hooks.on_attempt, n, attempts_allowed, session, agent)
-				history = await agent.run(max_steps=max_steps or settings.max_steps, on_step_end=guard)
+
+				async def step_start(a: Agent) -> None:
+					await _call(hooks.on_step_start, a)
+
+				budget = max_steps or settings.max_steps
+				history = await agent.run(max_steps=budget, on_step_start=step_start, on_step_end=guard)
+				# Instructions the person sent while the agent was finishing: carry on in the same browser.
+				while hooks.take_followups and not guard.signal and not (hooks.stop_requested and hooks.stop_requested()):
+					followups = hooks.take_followups()
+					if not followups:
+						break
+					agent.add_new_task('The person watching added: ' + ' / '.join(f'"{t}"' for t in followups) + '. Do this now, then finish with done.')
+					history = await agent.run(max_steps=agent.state.n_steps + budget, on_step_start=step_start, on_step_end=guard)
 
 				if guard.signal:
 					session.report(ok=False, blocked=True)
