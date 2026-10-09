@@ -86,3 +86,21 @@ def test_parse_status():
 	assert A.parse_status('SIGNUP_STATUS: Signed_Up — welcome page shown')[0] == 'signed_up'
 	assert A.parse_status('SIGNUP_STATUS: maybe')[0] == 'failed'
 	assert A.parse_status(None) == ('failed', 'no answer from the agent')
+
+
+def test_save_profiles_validates_and_round_trips(tmp_path):
+	path = tmp_path / 'acc' / 'profiles.csv'
+	assert A.load_profiles(path, allow_empty=True) == []
+	A.save_profiles(path, [{'id': 'p1', 'email': 'me@a.com', 'dob': '1999-03-07', 'unknown': 'dropped'}, {}])
+	(p,) = A.load_profiles(path)
+	assert p['email'] == 'me@a.com' and p['dob'] == '1999-03-07' and 'unknown' not in p
+	with pytest.raises(ValueError, match='not an email'):
+		A.save_profiles(path, [{'id': 'p1', 'email': 'nope'}])
+	with pytest.raises(ValueError, match='profile 2: duplicate'):
+		A.save_profiles(path, [{'id': 'p1', 'email': 'a@a.com'}, {'id': 'p1', 'email': 'b@b.com'}])
+	assert A.load_profiles(path)[0]['email'] == 'me@a.com'  # a rejected save leaves the file alone
+
+
+def test_watched_signups_ask_the_person_instead_of_stopping():
+	assert 'request_human_help' in A.build_task('https://a.test', {'x_email': 'e'}, ask_human=True)
+	assert 'request_human_help' not in A.build_task('https://a.test', {'x_email': 'e'})

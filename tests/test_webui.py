@@ -196,3 +196,39 @@ def test_server_refuses_other_origins_and_odd_paths(tmp_path):
 	assert 'llm_api_key' not in c.get('/api/config').json()
 	assert takes_control({'t': 'mouse', 'type': 'mousePressed'}) and not takes_control({'t': 'mouse', 'type': 'mouseMoved'})
 	assert not takes_control({'t': 'wheel'})
+
+
+@pytest.mark.asyncio
+async def test_accounts_api_keeps_passwords_server_side_and_records_signups(tmp_path, monkeypatch):
+	from httpx import ASGITransport, AsyncClient
+
+	from veil import accounts
+	from veil.webui.server import create_app
+
+	seen = {}
+
+	async def fake_run_task(task, settings, identity_name=None, max_steps=None, *, hooks, agent_kwargs):
+		seen.update(task=task, identity=identity_name, sensitive=agent_kwargs['sensitive_data'])
+		return TaskResult(ok=True, output='SIGNUP_STATUS: verify_email - check your inbox', attempts=[])
+
+	monkeypatch.setattr(runner_mod, 'run_task', fake_run_task)
+	env = Settings(data_dir=tmp_path)
+	app = create_app(env, port=7788)
+	async with AsyncClient(transport=ASGITransport(app=app), base_url='http://127.0.0.1:7788') as c:
+		assert (await c.get('/api/accounts')).json()['profiles'] == []
+		r = await c.post('/api/accounts/profiles', json={'profiles': [{'id': 'p1', 'email': 'me@a.com', 'first_name': 'Asha', 'password': 'S3cret!'}]})
+		assert r.status_code == 200 and r.json()['profiles'][0]['has_password'] and 'password' not in r.json()['profiles'][0]
+		# renamed without resending the password: it stays
+		await c.post('/api/accounts/profiles', json={'profiles': [{'id': 'me', 'original_id': 'p1', 'email': 'me@a.com'}]})
+		assert accounts.load_profiles(accounts.profiles_path(env))[0]['password'] == 'S3cret!'
+		assert (await c.post('/api/accounts/profiles', json={'profiles': [{'id': 'x', 'email': 'bad'}]})).status_code == 400
+
+		r = await c.post('/api/accounts/signup', json={'url': 'https://www.shop.test/join', 'values': {}})
+		assert r.status_code == 200 and r.json()['events'][0]['text'] == 'Sign up at shop.test as me (me@a.com)'
+		await asyncio.wait_for(app.state.runner._task, timeout=2)
+		assert seen['identity'] == 'acct-shop.test-me' and seen['sensitive']['https://*.shop.test']['x_password'] == 'S3cret!'
+		assert 'S3cret!' not in seen['task'] and 'me@a.com' not in seen['task']  # the LLM sees placeholders only
+		(row,) = (await c.get('/api/accounts')).json()['signups']
+		assert row['status'] == 'verify_email' and 'password' not in row
+		assert (await c.post('/api/accounts/reveal', json={'site': 'shop.test'})).json()['password'] == 'S3cret!'
+		assert (await c.post('/api/accounts/signup', json={'url': 'shop.test'})).status_code == 409  # one account per site

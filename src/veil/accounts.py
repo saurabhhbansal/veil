@@ -20,7 +20,11 @@ import time
 from dataclasses import asdict, dataclass, fields
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+	from veil.config import Settings
 
 PROFILE_COLUMNS = ['id', 'email', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'address', 'city', 'state', 'postcode', 'country', 'password']
 
@@ -50,6 +54,10 @@ def normalize_url(url: str) -> str:
 # --- profiles (the user's file) -----------------------------------------------------------------
 
 
+def profiles_path(settings: Settings) -> Path:
+	return settings.profiles_file or settings.accounts_dir / 'profiles.csv'
+
+
 def init_profiles(path: Path) -> bool:
 	"""Write an empty profiles.csv with the column headers. False if it already exists."""
 	if path.exists():
@@ -60,25 +68,50 @@ def init_profiles(path: Path) -> bool:
 	return True
 
 
-def load_profiles(path: Path) -> list[dict[str, str]]:
+def load_profiles(path: Path, allow_empty: bool = False) -> list[dict[str, str]]:
+	"""The user's profiles. allow_empty (the web UI): a missing or empty file is just no profiles yet."""
 	if not path.exists():
+		if allow_empty:
+			return []
 		raise ValueError(f'no profiles file at {path}: run `veil accounts init` and fill it in')
 	with path.open(newline='', encoding='utf-8-sig') as f:  # -sig: Excel saves CSV with a BOM
 		rows = [{(k or '').strip().lower(): (v or '').strip() for k, v in row.items()} for row in csv.DictReader(f)]
+	profiles = validate_profiles(rows, where=lambda n: f'{path.name} line {n + 2}')
+	if not profiles and not allow_empty:
+		raise ValueError(f'{path} has no profiles yet: add a row per email')
+	return profiles
+
+
+def validate_profiles(rows: list[dict[str, str]], where=lambda n: f'profile {n + 1}') -> list[dict[str, str]]:
+	"""Blank rows dropped; id and email required, ids unique, dob as YYYY-MM-DD. Raises ValueError naming the row."""
 	profiles, seen = [], set()
-	for n, row in enumerate(rows, 2):
+	for n, row in enumerate(rows):
 		if not any(row.values()):
 			continue
 		if not row.get('id') or not row.get('email'):
-			raise ValueError(f'{path.name} line {n}: "id" and "email" are required')
+			raise ValueError(f'{where(n)}: "id" and "email" are required')
 		if row['id'] in seen:
-			raise ValueError(f'{path.name} line {n}: duplicate id {row["id"]!r}')
+			raise ValueError(f'{where(n)}: duplicate id {row["id"]!r}')
+		if '@' not in row['email']:
+			raise ValueError(f'{where(n)}: {row["email"]!r} is not an email address')
 		if row.get('dob'):
-			_parse_dob(row['dob'], where=f'{path.name} line {n}')
+			_parse_dob(row['dob'], where=where(n))
 		seen.add(row['id'])
 		profiles.append(row)
-	if not profiles:
-		raise ValueError(f'{path} has no profiles yet: add a row per email')
+	return profiles
+
+
+def save_profiles(path: Path, rows: list[dict[str, str]]) -> list[dict[str, str]]:
+	"""Validate and write profiles.csv (only the known columns), replacing it in one step."""
+	clean = [{c: str(r.get(c) or '').strip() for c in PROFILE_COLUMNS} for r in rows]
+	profiles = validate_profiles(clean)
+	path.parent.mkdir(parents=True, exist_ok=True)
+	tmp = path.with_suffix('.tmp')
+	with tmp.open('w', newline='', encoding='utf-8') as f:
+		w = csv.DictWriter(f, fieldnames=PROFILE_COLUMNS)
+		w.writeheader()
+		w.writerows(profiles)
+	tmp.replace(path)
 	return profiles
 
 
@@ -192,8 +225,15 @@ def sensitive_data(site: str, values: dict[str, str]) -> dict[str, dict[str, str
 	return {f'https://*.{site}': values}
 
 
-def build_task(url: str, values: dict[str, str]) -> str:
+def build_task(url: str, values: dict[str, str], ask_human: bool = False) -> str:
+	"""ask_human: someone is watching (the web UI), so the agent hands CAPTCHAs and codes to them instead of stopping."""
 	names = ', '.join(sorted(values))
+	blocker = (
+		"- If you hit a CAPTCHA, a phone/SMS code, an email code you can't see, or anything else only I can do, call request_human_help "
+		"saying exactly what is needed, then continue once I've handed back. If it's still not done after that, stop there."
+		if ask_human
+		else "- If you hit a CAPTCHA, a phone/SMS code, an email code you can't see, or anything else only I can do, stop there."
+	)
 	return f"""Create an account for me at {url} using my own details.
 
 My details are provided as placeholders ({names}). Type them with <secret>name</secret>.
@@ -203,7 +243,7 @@ Use x_password for both password and confirm-password fields.
 Rules:
 - Only use these values. Never invent, guess or change a detail. If a required field has no matching placeholder, stop.
 - Leave optional newsletter/marketing boxes unticked. Tick the terms checkbox only if the form requires it.
-- If you hit a CAPTCHA, a phone/SMS code, an email code you can't see, or anything else only I can do, stop there.
+{blocker}
 - If the site says the email is already registered, stop; do not try a different email.
 
 Finish with done. The last line of your answer must be exactly one of:
@@ -212,6 +252,15 @@ SIGNUP_STATUS: verify_email - <the site asked to confirm via an emailed link>
 SIGNUP_STATUS: needs_human - <what I need to do, and on which page>
 SIGNUP_STATUS: already_registered - <the site's message>
 SIGNUP_STATUS: failed - <why>"""
+
+
+def finish(signup: Signup, output: str | None, attempts: list | None = None) -> Signup:
+	"""Fill in the signup's status and note from the agent's answer (or why there was none)."""
+	signup.status, signup.note = parse_status(output)
+	if not output and attempts:
+		a = attempts[-1]
+		signup.note = f'{a.outcome}: {a.detail}'[:300]
+	return signup
 
 
 def parse_status(output: str | None) -> tuple[str, str]:

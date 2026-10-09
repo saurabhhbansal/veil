@@ -1,6 +1,6 @@
 // The local veil server (`uv run veil ui`). In the built app it's the same origin; under `npm run dev`
 // (port 3000) it's `veil ui --dev` on 7788 unless NEXT_PUBLIC_VEIL_API says otherwise.
-import type { Snapshot, VeilConfig } from "./types";
+import type { AccountsState, ProfileDraft, Snapshot, VeilConfig } from "./types";
 
 export function apiBase(): string {
   if (process.env.NEXT_PUBLIC_VEIL_API) return process.env.NEXT_PUBLIC_VEIL_API.replace(/\/$/, "");
@@ -47,4 +47,9 @@ export const api = {
   takeOver: () => call<Snapshot>("/api/takeover", {}),
   handBack: (note = "") => call<Snapshot>("/api/handback", { note }),
   clear: () => call<Snapshot>("/api/clear", {}),
+  accounts: () => call<AccountsState>("/api/accounts"),
+  saveProfiles: (profiles: Omit<ProfileDraft, "key" | "has_password">[]) => call<AccountsState>("/api/accounts/profiles", { profiles }),
+  reveal: (site: string) => call<{ site: string; email: string; password: string }>("/api/accounts/reveal", { site }),
+  signup: (url: string, profileId: string, values: Record<string, unknown>) =>
+    call<Snapshot>("/api/accounts/signup", { url, profile_id: profileId || null, values }),
 };

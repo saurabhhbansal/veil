@@ -24,16 +24,12 @@ def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
 	return 0 if result.ok else 1
 
 
-def _profiles_path(settings: Settings):
-	return settings.profiles_file or settings.accounts_dir / 'profiles.csv'
-
-
 def _cmd_signup(args: argparse.Namespace, settings: Settings) -> int:
 	from veil import accounts
 	from veil.agent import run_task
 
 	url, site = accounts.normalize_url(args.url), accounts.site_of(args.url)
-	profiles = accounts.load_profiles(_profiles_path(settings))
+	profiles = accounts.load_profiles(accounts.profiles_path(settings))
 	log = accounts.SignupLog(settings.accounts_dir / 'signups.csv')
 	profile, signup, exists = accounts.plan_signup(profiles, log, site, args.profile)
 	if exists:
@@ -51,11 +47,7 @@ def _cmd_signup(args: argparse.Namespace, settings: Settings) -> int:
 			agent_kwargs={'sensitive_data': accounts.sensitive_data(site, values)},
 		)
 	)
-	signup.status, signup.note = accounts.parse_status(result.output)
-	if not result.output and result.attempts:
-		a = result.attempts[-1]
-		signup.note = f'{a.outcome}: {a.detail}'[:300]
-	log.record(signup)
+	log.record(accounts.finish(signup, result.output, result.attempts))
 	print(f'{site}: {signup.status} - {signup.note}')
 	return 0 if signup.status in accounts.DONE_STATUSES else 1
 
@@ -63,7 +55,7 @@ def _cmd_signup(args: argparse.Namespace, settings: Settings) -> int:
 def _cmd_accounts(args: argparse.Namespace, settings: Settings) -> int:
 	from veil import accounts
 
-	path = _profiles_path(settings)
+	path = accounts.profiles_path(settings)
 	if args.action == 'init':
 		print(f'{"created" if accounts.init_profiles(path) else "already exists:"} {path}')
 		print('Fill in one row per email you own (dob as YYYY-MM-DD; leave password blank to get a random one per site).')

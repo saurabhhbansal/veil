@@ -11,6 +11,10 @@ Everything runs on this PC: the agent, Fortress, and this server. No hosted brow
     POST /api/handback          {note} the person is done; the agent carries on
     WS   /api/live              live view: JPEG frames out, mouse/keyboard in (see live.py)
     GET  /api/runs/<run>/<file> step screenshots, recording.gif, result.json
+    GET  /api/accounts          your sign-up profiles and the sign-up log (passwords left out)
+    POST /api/accounts/profiles {profiles} replace profiles.csv; a profile sent without "password" keeps its saved one
+    POST /api/accounts/signup   {url, profile_id?, values} sign up on a site as one of your profiles (a normal run)
+    POST /api/accounts/reveal   {site} the password veil used on that site
 
 The UI has no login, so requests are only accepted from this PC's own origin (or the dev server's): another
 website open in the same browser can't drive the agent or the live view.
@@ -22,6 +26,7 @@ import base64
 import json
 import logging
 import re
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from veil import accounts
 from veil.config import Settings
 from veil.webui.live import LiveView
 from veil.webui.manager import ENGINES, PROVIDERS, saved_identities, settings_from_ui
@@ -169,6 +175,83 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 	@app.post('/api/clear')
 	async def clear():
 		await runner.clear()
+		return runner.snapshot()
+
+	# --- accounts: your own sign-up details, and where each was used ---------------------------
+
+	profiles_file, signups_file = accounts.profiles_path(env), env.accounts_dir / 'signups.csv'
+
+	def read_profiles() -> tuple[list[dict[str, str]], str | None]:
+		try:
+			return accounts.load_profiles(profiles_file, allow_empty=True), None
+		except ValueError as e:
+			return [], str(e)
+
+	@app.get('/api/accounts')
+	async def accounts_state():
+		profiles, error = read_profiles()
+		signups = sorted(accounts.SignupLog(signups_file).rows.values(), key=lambda x: x.updated, reverse=True)
+		return {
+			'profiles_file': str(profiles_file), 'signups_file': str(signups_file), 'error': error,
+			'columns': accounts.PROFILE_COLUMNS, 'statuses': accounts.STATUSES, 'done_statuses': accounts.DONE_STATUSES,
+			'profiles': [{**{k: v for k, v in p.items() if k != 'password'}, 'has_password': bool(p.get('password'))} for p in profiles],
+			'signups': [{**{k: v for k, v in asdict(x).items() if k != 'password'}, 'has_password': bool(x.password)} for x in signups],
+		}
+
+	@app.post('/api/accounts/profiles')
+	async def save_profiles(request: Request):
+		rows = (await request.json()).get('profiles')
+		if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+			raise HTTPException(400, 'profiles must be a list')
+		saved = {p['id']: p for p in read_profiles()[0]}
+		merged = []
+		for r in rows:
+			row = {c: str(r.get(c) or '') for c in accounts.PROFILE_COLUMNS if c != 'password'}
+			if r.get('password') is not None:
+				row['password'] = str(r['password'])
+			else:  # never sent to the page, so not sent back: keep what's saved (under the id it had before an edit)
+				row['password'] = saved.get(str(r.get('original_id') or row['id']), {}).get('password', '')
+			merged.append(row)
+		try:
+			accounts.save_profiles(profiles_file, merged)
+		except ValueError as e:
+			raise HTTPException(400, str(e)) from e
+		return await accounts_state()
+
+	@app.post('/api/accounts/reveal')
+	async def reveal(request: Request):
+		row = accounts.SignupLog(signups_file).get(str((await request.json()).get('site') or ''))
+		if not row:
+			raise HTTPException(404, 'no sign-up for that site')
+		return {'site': row.site, 'email': row.email, 'password': row.password}
+
+	@app.post('/api/accounts/signup')
+	async def signup(request: Request):
+		body = await request.json()
+		if runner.busy:
+			raise HTTPException(409, 'a task is already running: stop it first')
+		try:
+			raw = str(body.get('url') or '').strip()
+			site, url = accounts.site_of(raw), accounts.normalize_url(raw)
+			profiles = accounts.load_profiles(profiles_file)
+			log_ = accounts.SignupLog(signups_file)
+			profile, row, exists = accounts.plan_signup(profiles, log_, site, str(body.get('profile_id') or '') or None)
+		except ValueError as e:
+			raise HTTPException(400, str(e)) from e
+		if exists:
+			raise HTTPException(409, f'{site} already has an account ({row.status}) with {row.email}; not creating another')
+		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS and k != 'stealth_settings.identity'}
+		settings, _, max_steps, agent_kwargs = settings_from_ui(values, env)
+		typed = accounts.placeholders(profile, row.password)
+		agent_kwargs['sensitive_data'] = accounts.sensitive_data(site, typed)  # the LLM only ever sees the x_* names
+
+		def done(result) -> None:
+			log_.record(accounts.finish(row, result.output, result.attempts))
+
+		runner.start(RunRequest(
+			task=accounts.build_task(url, typed, ask_human=True), title=f'Sign up at {site} as {profile["id"]} ({profile["email"]})',
+			kind='signup', settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs, on_done=done,
+		))
 		return runner.snapshot()
 
 	@app.get('/api/runs/{run}/{name}')

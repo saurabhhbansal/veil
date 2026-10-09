@@ -53,6 +53,8 @@ Human takeover: RunHooks.request_human pauses the agent (status needs_human). _B
 CAPTCHAs (detection.find_captcha) and unsolved challenges to the person once per page before rotating; the agent
 also has a `request_human_help` action. hand_back() injects an ActionResult note into agent.state.last_result.
 Not Browser Use Cloud: veil never uses hosted browser services (user decision, 2026-10-09).
+Accounts in the app: /api/accounts* (server.py) over accounts.py; sign-ups run through AgentRunner (RunRequest.title/kind/
+on_done records the status). Passwords leave the server only via /api/accounts/reveal.
 
 ## Status (Windows PC, 2026-10-09)
 

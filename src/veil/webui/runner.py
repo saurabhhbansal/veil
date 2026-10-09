@@ -15,6 +15,7 @@ import json
 import logging
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,9 @@ class RunRequest:
 	identity: str | None = None
 	max_steps: int | None = None
 	agent_kwargs: dict[str, Any] = field(default_factory=dict)
+	title: str | None = None  # what the chat shows instead of `task` (e.g. a generated sign-up prompt)
+	kind: str = 'task'  # task | signup
+	on_done: Callable[[TaskResult], None] | None = None  # called with the result once the agent has finished or stopped
 
 
 def identity_info(n: int, total: int, session) -> dict[str, Any]:
@@ -118,7 +122,7 @@ class AgentRunner:
 		self.result, self._agent, self._session, self._stop_requested = None, None, None, False
 		self.human, self.identity = None, None
 		self.status = 'starting'
-		self._event('task', text=req.task, run=self.run_dir.name)
+		self._event('task', text=req.title or req.task, kind=req.kind, run=self.run_dir.name)
 		self._task = asyncio.create_task(self._run(req))
 
 	def pause_resume(self) -> None:
@@ -270,6 +274,11 @@ class AgentRunner:
 				'result', ok=r.ok, stopped=self._stop_requested, output=None if self._stop_requested else r.output,
 				attempts=[a.__dict__ for a in r.attempts],
 			)
+			if req.on_done:
+				try:
+					req.on_done(r)
+				except Exception:
+					log.exception('on_done failed')
 			if self.run_dir:
 				(self.run_dir / 'result.json').write_text(
 					json.dumps({'task': req.task, 'ok': r.ok, 'output': r.output, 'attempts': [a.__dict__ for a in r.attempts]}, indent=2)

@@ -53,7 +53,7 @@ interface BaseEvent {
 
 export type RunEvent = BaseEvent &
   (
-    | { type: "task"; text: string; run: string }
+    | { type: "task"; text: string; run: string; kind?: "task" | "signup" }
     | { type: "attempt"; identity: Identity }
     | {
         type: "step";
@@ -155,3 +155,51 @@ export interface ConversationTurn {
   items: RunEvent[]; // everything after the task, in order
   isComplete: boolean;
 }
+
+// ── Accounts (GET /api/accounts): your own sign-up details; passwords never come to the page ──
+
+export interface AccountProfile {
+  id: string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  dob?: string;
+  gender?: string;
+  phone?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  postcode?: string;
+  country?: string;
+  has_password: boolean;
+}
+
+export interface SignupRow {
+  site: string;
+  profile_id: string;
+  email: string;
+  status: string;
+  identity: string;
+  updated: string;
+  note: string;
+  has_password: boolean;
+}
+
+export interface AccountsState {
+  profiles_file: string;
+  signups_file: string;
+  error: string | null;
+  columns: string[];
+  statuses: string[];
+  done_statuses: string[];
+  profiles: AccountProfile[];
+  signups: SignupRow[];
+}
+
+/** A profile being edited. `password` undefined = keep the saved one; "" = clear it. */
+export type ProfileDraft = Omit<AccountProfile, "has_password"> & {
+  original_id?: string;
+  password?: string;
+  has_password?: boolean;
+  key: string;
+};

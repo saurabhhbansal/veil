@@ -4,7 +4,8 @@
 // no session id to route to. With no task yet it's the home screen; after that, chat on the left and the
 // agent's live browser on the right.
 import { useEffect, useRef, useState } from "react";
-import { Download, FileJson, MessageSquare, MonitorPlay, Plus, VenetianMask } from "lucide-react";
+import { Download, FileJson, MessageSquare, MonitorPlay, Plus, UserRound, VenetianMask } from "lucide-react";
+import { AccountsPanel } from "@/components/accounts-panel";
 import { BrowserPanel } from "@/components/browser-panel";
 import { ChatInput } from "@/components/chat-input";
 import { ChatMessages } from "@/components/chat-messages";
@@ -47,7 +48,21 @@ function ErrorLine() {
   );
 }
 
-function Home() {
+function AccountsButton({ onClick, compact }: { onClick: () => void; compact?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Your sign-up profiles and accounts"
+      className={`inline-flex items-center gap-1.5 rounded-md text-[12px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 ${
+        compact ? "h-7 px-2" : "h-8 px-3 border border-zinc-800"
+      }`}
+    >
+      <UserRound className="w-3.5 h-3.5" /> Accounts
+    </button>
+  );
+}
+
+function Home({ onAccounts }: { onAccounts: () => void }) {
   const { start } = useRun();
   const { config } = useSettings();
   const [isStarting, setIsStarting] = useState(false);
@@ -60,7 +75,10 @@ function Home() {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen px-4">
+    <div className="relative flex flex-col items-center justify-center min-h-screen px-4">
+      <div className="absolute top-4 right-4">
+        <AccountsButton onClick={onAccounts} />
+      </div>
       <div className="w-full max-w-2xl mx-auto flex flex-col items-center gap-8">
         <div className="text-center space-y-3">
           <div className="inline-flex items-center gap-2 text-zinc-400">
@@ -97,7 +115,7 @@ function Home() {
   );
 }
 
-function SessionView() {
+function SessionView({ onAccounts }: { onAccounts: () => void }) {
   const { snap, turns, start, stop, clear, handBack } = useRun();
   const chatRef = useRef<HTMLDivElement>(null);
   const [mobilePane, setMobilePane] = useState<"chat" | "browser">("chat");
@@ -130,6 +148,7 @@ function SessionView() {
             {status.label}
           </span>
           <div className="ml-auto flex items-center gap-1">
+            <AccountsButton onClick={onAccounts} compact />
             <button
               onClick={() => setMobilePane("browser")}
               className="lg:hidden h-7 px-2 rounded-md text-[12px] text-zinc-400 hover:bg-zinc-800 inline-flex items-center gap-1"
@@ -204,6 +223,7 @@ function SessionView() {
 
 export default function Page() {
   const { snap, connected } = useRun();
+  const [accountsOpen, setAccountsOpen] = useState(false);
   if (!connected && snap.version < 0) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center">
@@ -212,5 +232,11 @@ export default function Page() {
       </div>
     );
   }
-  return snap.events.length ? <SessionView /> : <Home />;
+  const openAccounts = () => setAccountsOpen(true);
+  return (
+    <>
+      {snap.events.length ? <SessionView onAccounts={openAccounts} /> : <Home onAccounts={openAccounts} />}
+      <AccountsPanel open={accountsOpen} onClose={() => setAccountsOpen(false)} />
+    </>
+  );
 }

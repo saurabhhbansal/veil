@@ -27,6 +27,7 @@ interface RunContextType {
   error: string | null;
   setError: (e: string | null) => void;
   start: (task: string) => Promise<boolean>;
+  startSignup: (url: string, profileId: string) => Promise<boolean>;
   stop: () => Promise<void>;
   pauseResume: () => Promise<void>;
   takeOver: () => Promise<void>;
@@ -100,6 +101,20 @@ export function RunProvider({ children }: { children: ReactNode }) {
     [accept, uiValues],
   );
 
+  const startSignup = useCallback(
+    async (url: string, profileId: string) => {
+      setError(null);
+      try {
+        accept(await api.signup(url, profileId, uiValues()));
+        return true;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return false;
+      }
+    },
+    [accept, uiValues],
+  );
+
   const value = useMemo<RunContextType>(
     () => ({
       snap,
@@ -108,13 +123,14 @@ export function RunProvider({ children }: { children: ReactNode }) {
       error,
       setError,
       start,
+      startSignup,
       stop: wrap(api.stop),
       pauseResume: wrap(api.pause),
       takeOver: wrap(api.takeOver),
       handBack: (note?: string) => wrap(() => api.handBack(note))(),
       clear: wrap(api.clear),
     }),
-    [snap, connected, error, start, wrap],
+    [snap, connected, error, start, startSignup, wrap],
   );
 
   return <RunContext.Provider value={value}>{children}</RunContext.Provider>;

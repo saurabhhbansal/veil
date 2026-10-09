@@ -70,6 +70,10 @@ Type a task (the icons under the box set the LLM, sticky identity, engine, geo-m
   (`request_human_help`) for 2FA codes or logins it has no credentials for. If a challenge is still there after you
   had a go, veil rotates to a fresh identity as before. Each page is handed to you once.
 - **Stop / Pause:** Stop finishes the current step and doesn't count against the proxy.
+- **Accounts (top right):** a side panel for `veil signup`. **Profiles** edits your own details (`profiles.csv`, one
+  profile per email you own); **Sign-ups** starts a sign-up on a site and lists where each profile was used, with status,
+  notes, retry and the password veil used. Passwords never reach the page unless you press *Show password*, and the
+  agent only ever sees placeholders (`x_email`, ...). In the app, CAPTCHAs and codes during a sign-up come to you.
 
 Everything runs on this PC (FastAPI server + Fortress); no hosted browser service is involved. The live view is a
 second CDP connection (screencast out, `Input.*` events in), invisible to pages. Runs are kept in `~/.veil/runs/` (step
