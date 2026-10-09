@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 
 if TYPE_CHECKING:
 	from veil.config import Settings
+	from veil.identities import ProfileSource
 
 log = logging.getLogger('veil.accounts')
 
@@ -218,34 +219,54 @@ def identity_name(site: str, profile_id: str) -> str:
 	return re.sub(r'[^A-Za-z0-9_.-]', '-', f'acct-{site}-{profile_id}')[:64]
 
 
+def _source(profiles: list[dict[str, str]] | ProfileSource) -> ProfileSource:
+	from veil.identities import LocalProfiles
+
+	return LocalProfiles(profiles) if isinstance(profiles, list) else profiles
+
+
+def _known(source: ProfileSource, row: Signup) -> dict[str, str]:
+	"""The profile behind a logged row; just its id and email if the source no longer has it (or can't be reached)."""
+	try:
+		return source.get(row.profile_id)
+	except ValueError:
+		return {'id': row.profile_id, 'email': row.email}
+
+
 def plan_signup(
-	profiles: list[dict[str, str]], log: SignupLog, site: str, profile_id: str | None = None, exclude: set[str] | frozenset[str] = frozenset()
+	profiles: list[dict[str, str]] | ProfileSource,
+	log: SignupLog,
+	site: str,
+	profile_id: str | None = None,
+	exclude: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[dict[str, str], Signup, bool]:
 	"""Pick the profile for `site`. Returns (profile, signup row, account_exists).
 
+	`profiles` is the profiles.csv rows or a ProfileSource (identities.py: the company identity server).
 	A named profile with a row for this site keeps that row: a retry continues as the same person, and a
 	profile with an account there never gets a second one. With no profile named, the site's existing
-	account (or its last attempt) wins; otherwise a random profile not in `exclude` (ids another job of the
-	same request already took).
+	account (or its last attempt) wins; otherwise the source assigns one not in `exclude` (ids another job of
+	the same request already took): a random free profile, or whoever the identity server hands out.
 	"""
-	by_id = {p['id']: p for p in profiles}
-	if profile_id and profile_id not in by_id:
-		raise ValueError(f'no profile with id {profile_id!r} (have: {", ".join(by_id)})')
+	source = _source(profiles)
 	if profile_id:
+		profile = source.get(profile_id)
 		prev = log.get(site, profile_id)
 		if prev:
-			return by_id[profile_id], prev, prev.status in DONE_STATUSES
-		profile = by_id[profile_id]
+			return profile, prev, prev.status in DONE_STATUSES
 	else:
 		for prev in log.for_site(site):
 			if prev.status in DONE_STATUSES:
-				return by_id.get(prev.profile_id) or {'id': prev.profile_id, 'email': prev.email}, prev, True
-			if prev.profile_id in by_id and prev.profile_id not in exclude:
-				return by_id[prev.profile_id], prev, False
-		free = [p for p in profiles if p['id'] not in exclude]
-		if not free:
-			raise ValueError(f'every profile is already taken for {site}')
-		profile = secrets.choice(free)
+				return _known(source, prev), prev, True
+			if prev.profile_id not in exclude:
+				try:
+					return source.get(prev.profile_id), prev, False
+				except ValueError:
+					continue  # that profile is gone: someone else this time
+		profile = source.assign(site, 'signup', exclude)
+		prev = log.get(site, profile['id'])
+		if prev:  # the server handed out someone who already tried here: continue as them
+			return profile, prev, prev.status in DONE_STATUSES
 	signup = Signup(
 		site=site,
 		profile_id=profile['id'],
@@ -261,14 +282,21 @@ def sensitive_data(site: str, values: dict[str, str]) -> dict[str, dict[str, str
 	return {f'https://*.{site}': values}
 
 
-def _blocker(ask_human: bool) -> str:
+def _blocker(ask_human: bool, codes: bool = False) -> str:
+	"""codes: the identity server can read the person's one-time codes (the agent has get_verification_code)."""
+	fetch = (
+		"- If the site sends a one-time code to x_email or x_phone, call get_verification_code with channel 'email' or 'sms' "
+		"(it waits for the code to arrive) and type what it returns. Only if it returns no code, treat it as something only I can do.\n"
+		if codes
+		else ''
+	)
 	if ask_human:
-		return (
+		return fetch + (
 			"- If you hit a CAPTCHA, a one-time code sent by email or SMS, or anything else only I can do, call request_human_help "
 			"saying exactly what is needed. I either do it in the browser or put the code in my note when I hand back: if my note "
 			"has a code, type it into the code field. If it's still not done after that, stop there."
 		)
-	return "- If you hit a CAPTCHA, a phone/SMS code, an email code you can't see, or anything else only I can do, stop there."
+	return fetch + "- If you hit a CAPTCHA, a phone/SMS code, an email code you can't see, or anything else only I can do, stop there."
 
 
 # Rules for every account run. The failures seen so far: a "Sign up with Apple" popup taking over the flow,
@@ -282,8 +310,11 @@ def _details(values: dict[str, str]) -> str:
 	return f'My details are provided as placeholders ({", ".join(sorted(values))}). Type them with <secret>name</secret>.'
 
 
-def build_task(url: str, values: dict[str, str], ask_human: bool = False, request: str | None = None, if_registered: str = 'stop') -> str:
+def build_task(
+	url: str, values: dict[str, str], ask_human: bool = False, request: str | None = None, if_registered: str = 'stop', codes: bool = False
+) -> str:
 	"""ask_human: someone is watching (the web UI), so the agent hands CAPTCHAs and codes to them instead of stopping.
+	codes: the agent can fetch one-time codes from the identity server (get_verification_code).
 	request: the user's own words when the sign-up came from a chat message, so anything else they asked is kept.
 	if_registered: 'stop', or 'login' (the person asked to "log in or sign up": an existing account is used instead)."""
 	asked = f'\nWhat I asked, in my words: "{request.strip()}"\n' if request else ''
@@ -303,7 +334,7 @@ Rules:
 - Only use these values. Never invent, guess or change a detail. If a required field has no matching placeholder, stop.
 - Leave optional newsletter/marketing boxes unticked. Tick the terms checkbox only if the form requires it.
 {_ACCOUNT_RULES}
-{_blocker(ask_human)}
+{_blocker(ask_human, codes)}
 {registered}
 
 Finish with done. The last line of your answer must be exactly one of:
@@ -315,7 +346,7 @@ SIGNUP_STATUS: already_registered - <the site's message>
 SIGNUP_STATUS: failed - <why>"""
 
 
-def build_login_task(url: str, values: dict[str, str], ask_human: bool = False, request: str | None = None) -> str:
+def build_login_task(url: str, values: dict[str, str], ask_human: bool = False, request: str | None = None, codes: bool = False) -> str:
 	"""Log in to an account the person already has (made by veil, or by them with the profile's password)."""
 	asked = f'\nWhat I asked, in my words: "{request.strip()}". Once you are logged in, also do whatever else that asks.\n' if request else ''
 	return f"""Log in to my existing account at {url}.
@@ -327,7 +358,7 @@ Rules:
 - Only use these values. Never create a new account and never change the password.
 - Prefer logging in with the password: if the site offers a one-time code instead, look for "use password instead" first.
 {_ACCOUNT_RULES}
-{_blocker(ask_human)}
+{_blocker(ask_human, codes)}
 
 Finish with done. The last line of your answer must be exactly one of:
 LOGIN_STATUS: logged_in - <what you saw that confirms it, e.g. the home feed or my profile>
@@ -337,23 +368,24 @@ LOGIN_STATUS: no_account - <the site says there is no account for this email>
 LOGIN_STATUS: failed - <why>"""
 
 
-def plan_login(profiles: list[dict[str, str]], log: SignupLog, site: str, profile_id: str | None = None) -> tuple[dict[str, str], Signup, bool]:
+def plan_login(
+	profiles: list[dict[str, str]] | ProfileSource, log: SignupLog, site: str, profile_id: str | None = None
+) -> tuple[dict[str, str], Signup, bool]:
 	"""Which account to log in to on `site`. Returns (profile, row, row_is_logged).
 
 	A row from a veil sign-up gives the password and the sticky identity. Without one, the account was made
 	outside veil: the profile's own password is used, on that profile's sticky identity for the site.
+	With no profile named and no row, the source picks (profiles.csv: only when it has exactly one profile).
 	"""
-	by_id = {p['id']: p for p in profiles}
+	source = _source(profiles)
 	row = log.get(site, profile_id)
 	if row:
-		return by_id.get(row.profile_id) or {'id': row.profile_id, 'email': row.email}, row, True
-	if profile_id and profile_id not in by_id:
-		raise ValueError(f'no profile with id {profile_id!r} (have: {", ".join(by_id)})')
-	if not profile_id:
-		if len(profiles) != 1:
-			raise ValueError(f'say which profile to log in to {site} with (have: {", ".join(by_id) or "none"})')
-		profile_id = profiles[0]['id']
-	profile = by_id[profile_id]
+		return _known(source, row), row, True
+	profile = source.get(profile_id) if profile_id else source.assign(site, 'login')
+	profile_id = profile['id']
+	row = log.get(site, profile_id)
+	if row:
+		return profile, row, True
 	if not profile.get('password'):
 		raise ValueError(f'profile {profile_id!r} has no password saved: add the one you use on {site} under Accounts')
 	row = Signup(site=site, profile_id=profile_id, email=profile['email'], password=profile['password'], identity=identity_name(site, profile_id))

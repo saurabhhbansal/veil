@@ -55,6 +55,12 @@ class Settings:
 	profiles_file: Path | None = None  # your own sign-up details; default <data_dir>/accounts/profiles.csv
 	env_file: Path | None = None  # the .env these settings came from; the web UI writes keys and proxies back to it
 
+	# Company identity server (identities.py, docs/IDENTITY_API.md): when set, account runs get their person from it, not profiles.csv
+	identity_api: str | None = None  # base URL, e.g. http://10.0.0.5:8900
+	identity_api_token: str | None = None  # sent as Authorization: Bearer <token>
+	identity_api_timeout: float = 15.0
+	identity_api_send_passwords: bool = False  # include the password veil used when reporting a run's outcome
+
 	@property
 	def accounts_dir(self) -> Path:
 		return self.data_dir / 'accounts'
@@ -100,4 +106,8 @@ class Settings:
 			s.data_dir = Path(dd).expanduser()
 		pr = _opt('VEIL_PROFILES_FILE')
 		s.profiles_file = Path(pr).expanduser() if pr else None
+		s.identity_api = _opt('VEIL_IDENTITY_API')
+		s.identity_api_token = _opt('VEIL_IDENTITY_API_TOKEN')
+		s.identity_api_timeout = _float('VEIL_IDENTITY_API_TIMEOUT') or s.identity_api_timeout
+		s.identity_api_send_passwords = _bool('VEIL_IDENTITY_API_SEND_PASSWORDS', s.identity_api_send_passwords)
 		return s

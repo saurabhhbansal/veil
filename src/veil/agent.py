@@ -126,19 +126,40 @@ class _BlockGuard:
 			agent.stop()
 
 
-def _human_tools(request_human) -> Tools:
-	"""browser-use's default actions plus one to hand the browser to the person watching."""
+def _tools(request_human=None, fetch_code=None) -> Tools:
+	"""browser-use's default actions, plus one to hand the browser to the person watching and/or one to read
+	a one-time code from the identity server."""
 	tools = Tools()
 
-	@tools.action(
-		'Ask the human operator to take over the browser for something only a person can do: a CAPTCHA or '
-		'"verify you are human" check, a 2FA / SMS / email code, or a login you have no credentials for. '
-		'The run pauses until they finish. Do not use it for anything you can do yourself.'
-	)
-	async def request_human_help(reason: str) -> ActionResult:
-		await _call(request_human, reason, {'source': 'agent'})
-		msg = f'Asked the human operator for help: {reason}. They take over the browser before your next step.'
-		return ActionResult(extracted_content=msg, long_term_memory=msg)
+	if request_human:
+
+		@tools.action(
+			'Ask the human operator to take over the browser for something only a person can do: a CAPTCHA or '
+			'"verify you are human" check, a 2FA / SMS / email code, or a login you have no credentials for. '
+			'The run pauses until they finish. Do not use it for anything you can do yourself.'
+		)
+		async def request_human_help(reason: str) -> ActionResult:
+			await _call(request_human, reason, {'source': 'agent'})
+			msg = f'Asked the human operator for help: {reason}. They take over the browser before your next step.'
+			return ActionResult(extracted_content=msg, long_term_memory=msg)
+
+	if fetch_code:
+
+		@tools.action(
+			"Get the one-time verification code the site just sent to the account's email or phone. channel is 'sms' "
+			"or 'email'. Waits up to a minute and a half for it to arrive. Call it after the site says it sent a code."
+		)
+		async def get_verification_code(channel: str) -> ActionResult:
+			try:
+				code = await fetch_code(channel)
+			except Exception as e:
+				log.warning('verification code lookup failed: %s', e)
+				code = None
+			if not code:
+				msg = f'No {channel} code arrived. Treat the code as something only the human can provide.'
+				return ActionResult(extracted_content=msg, long_term_memory=msg)
+			# The code itself stays out of long-term memory: it's single-use and needed only for the next input.
+			return ActionResult(extracted_content=f'The {channel} verification code is {code}', long_term_memory=f'Fetched the {channel} code.')
 
 	return tools
 
@@ -153,9 +174,12 @@ async def run_task(
 	agent_kwargs: dict[str, Any] | None = None,
 	proxy_source: ProxySource | None = None,
 	country: str | None = None,
+	fetch_code: Callable[[str], Awaitable[str | None]] | None = None,
 ) -> TaskResult:
 	"""proxy_source: share one between runs that go at the same time, so each takes a different proxy.
-	country: ISO code of where the person is (an account run): the exit IP is picked there when the source can."""
+	country: ISO code of where the person is (an account run): the exit IP is picked there when the source can.
+	fetch_code(channel): reads the account's one-time codes (identities.IdentityAPI.code_fetcher); the agent
+	gets a get_verification_code action for it."""
 	hooks = hooks or RunHooks()
 	llm = build_llm(settings)
 	proxy_source = proxy_source or make_proxy_source(settings)  # shared across attempts so cooldowns carry over
@@ -178,8 +202,8 @@ async def run_task(
 				attempt.persona = session.persona.summary() if session.persona else None
 				guard = _BlockGuard(session, hooks.request_human)
 				kwargs = dict(agent_kwargs or {})
-				if hooks.request_human and 'tools' not in kwargs:
-					kwargs['tools'] = _human_tools(hooks.request_human)
+				if (hooks.request_human or fetch_code) and 'tools' not in kwargs:
+					kwargs['tools'] = _tools(hooks.request_human, fetch_code)
 				agent = Agent(task=task, llm=llm, browser_session=session.browser, register_new_step_callback=hooks.on_step, **kwargs)
 				await _call(hooks.on_attempt, n, attempts_allowed, session, agent)
 

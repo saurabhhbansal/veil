@@ -29,7 +29,7 @@ import re
 import secrets
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -63,6 +63,7 @@ class RunRequest:
 	proxy_source: ProxySource | None = None  # shared by runs at the same time, so each takes its own proxy
 	group: str | None = None  # the split request this run belongs to
 	country: str | None = None  # ISO code of where the person is: their exit IP is picked there
+	fetch_code: Callable[[str], Awaitable[str | None]] | None = None  # one-time codes from the identity server
 
 
 def identity_info(n: int, total: int, session) -> dict[str, Any]:
@@ -518,6 +519,8 @@ class AgentRunner:
 		extra: dict[str, Any] = {'proxy_source': req.proxy_source} if req.proxy_source is not None else {}
 		if req.country:
 			extra['country'] = req.country
+		if req.fetch_code:
+			extra['fetch_code'] = req.fetch_code
 		try:
 			if req.gate:
 				async with req.gate:  # a browser slot: Stop while queued cancels here

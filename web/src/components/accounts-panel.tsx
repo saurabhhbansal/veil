@@ -330,7 +330,25 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
             </div>
           )}
 
-          {state && tab === "profiles" && (
+          {state && tab === "profiles" && state.identity_api && (
+            <>
+              <p className="text-[12px] text-zinc-500 leading-relaxed">
+                People come from your company identity server at <code className="text-zinc-400">{state.identity_api}</code> (
+                <code className="text-zinc-400">VEIL_IDENTITY_API</code>). Each sign-up asks it for someone; edit them there. See
+                docs/IDENTITY_API.md.
+              </p>
+              {state.profiles.map((p) => (
+                <div key={p.id} className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-[13px] text-zinc-300">
+                  <span className="text-zinc-200 font-medium">{p.id}</span> <span className="text-zinc-500">{p.email}</span>
+                </div>
+              ))}
+              {!state.profiles.length && (
+                <p className="text-[12px] text-zinc-500">The server lists nobody here; people are assigned per run.</p>
+              )}
+            </>
+          )}
+
+          {state && tab === "profiles" && !state.identity_api && (
             <>
               <p className="text-[12px] text-zinc-500 leading-relaxed">
                 Your own details, one profile per email you own. Saved on this PC in <code className="text-zinc-400">{state.profiles_file}</code>.

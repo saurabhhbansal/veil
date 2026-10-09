@@ -82,7 +82,7 @@ Rules:
 
 The user's profiles (id: email):
 {profiles}
-
+{on_demand}
 Accounts veil already knows about (site, profile, status):
 {known}"""
 
@@ -99,10 +99,22 @@ def _fallback(text: str, profiles: list[dict[str, str]]) -> list[Job] | None:
 	return [Job(action, accounts.normalize_url(url), accounts.profile_in(text, profiles), text)]
 
 
+_ON_DEMAND = (
+	'More people are assigned on demand by the company identity server, so there is no limit on how many accounts can be '
+	'made: for each account job that needs a person not listed above, use profile_id "" (each such job gets a different person).\n'
+)
+
+
 async def plan(
-	text: str, profiles: list[dict[str, str]], known: list[accounts.Signup], llm: BaseChatModel | None, timeout: float = 45
+	text: str,
+	profiles: list[dict[str, str]],
+	known: list[accounts.Signup],
+	llm: BaseChatModel | None,
+	timeout: float = 45,
+	on_demand: bool = False,
 ) -> list[Job] | None:
-	"""The jobs a message asks for, or None for one ordinary task (run as typed)."""
+	"""The jobs a message asks for, or None for one ordinary task (run as typed).
+	on_demand: people come from the identity server (identities.py), so the profile list isn't a limit."""
 	if not worth_planning(text):
 		return None
 	if llm is None:
@@ -111,7 +123,7 @@ async def plan(
 
 	listing = '\n'.join(f'- {p["id"]}: {p.get("email", "")}' for p in profiles) or '(none)'
 	known_listing = '\n'.join(f'- {r.site}, {r.profile_id}, {r.status}' for r in known) or '(none)'
-	prompt = _PROMPT.format(profiles=listing, known=known_listing, max_jobs=MAX_JOBS)
+	prompt = _PROMPT.format(profiles=listing, known=known_listing, max_jobs=MAX_JOBS, on_demand=_ON_DEMAND if on_demand else '')
 	try:
 		res = await asyncio.wait_for(llm.ainvoke([SystemMessage(content=prompt), UserMessage(content=text)], output_format=_Plan), timeout)
 		raw = res.completion.jobs

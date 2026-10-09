@@ -24,6 +24,7 @@ GET/SSE/WebSocket) and default to 'main'.
     GET  /api/runs/<run>/<file> step screenshots, recording.gif, result.json
     GET  /api/accounts          your sign-up profiles and the sign-up log (passwords left out)
     POST /api/accounts/profiles {profiles} replace profiles.csv; a profile sent without "password" keeps its saved one
+                                (with VEIL_IDENTITY_API set, people come from the company identity server instead: identities.py)
     POST /api/accounts/signup   {url, profile_id?, values} sign up on a site as one of your profiles (a normal run)
     POST /api/accounts/login    {url, profile_id?, values} log in to an account you have there
     POST /api/accounts/reveal   {site, profile_id} the password veil used on that site
@@ -50,7 +51,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from veil import accounts, planner
+from veil import accounts, identities, planner
 from veil.config import Settings
 from veil.geo import country_code
 from veil.llm import EFFORTS, KEY_ENV, MODELS, build_llm
@@ -193,19 +194,28 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 	profiles_file, signups_file = accounts.profiles_path(env), env.accounts_dir / 'signups.csv'
 
 	def read_profiles() -> tuple[list[dict[str, str]], str | None]:
+		"""profiles.csv, or with an identity server, whoever it lists (blocking: call it off the event loop)."""
+		if env.identity_api:
+			return identities.profile_source(env).listing(), None
 		try:
 			return accounts.load_profiles(profiles_file, allow_empty=True), None
 		except ValueError as e:
 			return [], str(e)
 
-	def account_request(
+	async def account_request(
 		job: Job, values: dict[str, Any], review: bool, *, request_text: str | None = None, panel: bool = False, exclude: frozenset[str] = frozenset()
 	) -> tuple[RunRequest, str, str]:
 		"""A sign-up / log-in job -> (RunRequest, site, profile id). The details go in as secrets only."""
+		values = {k: v for k, v in values.items() if k != 'stealth_settings.identity'}  # an account always uses its own identity
+		try:
+			settings, _, max_steps, agent_kwargs = settings_from_ui(values, env)
+		except (ValueError, RuntimeError) as e:
+			raise HTTPException(400, str(e)) from e
+		proxy_source = hub.proxy_source(settings)
 		try:
 			raw = job.url.strip()
 			site, url = accounts.site_of(raw), accounts.normalize_url(raw)
-			profiles = accounts.load_profiles(profiles_file)
+			source = identities.profile_source(settings, proxy_source)
 			log_ = accounts.SignupLog(signups_file)
 		except ValueError as e:
 			raise HTTPException(400, str(e)) from e
@@ -213,40 +223,43 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		if action == 'auto':  # "log in or sign up": log in where veil knows the account, else sign up (or log in if it exists)
 			row = log_.get(site, job.profile_id)
 			action, if_registered = ('login' if row and row.status in accounts.DONE_STATUSES else 'signup'), 'login'
+		kind = 'signup' if action == 'signup' else 'login'
 		try:
-			if action == 'signup':
-				profile, row, exists = accounts.plan_signup(profiles, log_, site, job.profile_id, exclude)
-				if exists:
-					raise HTTPException(
-						409,
-						f'{site} already has an account ({row.status.replace("_", " ")}) with {row.email}. Not creating another; '
-						f'say "log in to {site}" to use it.',
-					)
-				typed = accounts.placeholders(profile, row.password)
-				task = accounts.build_task(url, typed, ask_human=True, request=request_text, if_registered=if_registered)
-
-				def done(result) -> None:
-					log_.record(accounts.finish(row, result.output, result.attempts))
-
-				verb, kind = 'Signing up at', 'signup'
+			# The identity server is a network call: keep it off the event loop (the live view streams through it).
+			if kind == 'signup':
+				profile, row, exists = await asyncio.to_thread(accounts.plan_signup, source, log_, site, job.profile_id, exclude)
 			else:
-				profile, row, logged = accounts.plan_login(profiles, log_, site, job.profile_id)
-				typed = accounts.placeholders(profile, row.password)
-				task = accounts.build_login_task(url, typed, ask_human=True, request=request_text)
-
-				def done(result) -> None:
-					rec = accounts.finish_login(row, result.output, result.attempts, logged)
-					if rec:
-						log_.record(rec)
-
-				verb, kind = 'Logging in at', 'login'
+				profile, row, logged = await asyncio.to_thread(accounts.plan_login, source, log_, site, job.profile_id)
+		except identities.IdentityAPIError as e:
+			raise HTTPException(502, str(e)) from e
 		except ValueError as e:
 			raise HTTPException(400, str(e)) from e
-		values = {k: v for k, v in values.items() if k != 'stealth_settings.identity'}  # an account always uses its own identity
-		try:
-			settings, _, max_steps, agent_kwargs = settings_from_ui(values, env)
-		except (ValueError, RuntimeError) as e:
-			raise HTTPException(400, str(e)) from e
+		fetch_code = source.code_fetcher(profile['id'], site)
+		typed = accounts.placeholders(profile, row.password)
+		if kind == 'signup':
+			if exists:
+				raise HTTPException(
+					409,
+					f'{site} already has an account ({row.status.replace("_", " ")}) with {row.email}. Not creating another; '
+					f'say "log in to {site}" to use it.',
+				)
+			task = accounts.build_task(url, typed, ask_human=True, request=request_text, if_registered=if_registered, codes=bool(fetch_code))
+
+			def done(result) -> None:
+				log_.record(accounts.finish(row, result.output, result.attempts))
+				source.report(row, 'signup')
+
+			verb = 'Signing up at'
+		else:
+			task = accounts.build_login_task(url, typed, ask_human=True, request=request_text, codes=bool(fetch_code))
+
+			def done(result) -> None:
+				rec = accounts.finish_login(row, result.output, result.attempts, logged)
+				if rec:
+					log_.record(rec)
+				source.report(rec or row, 'login')
+
+			verb = 'Logging in at'
 		agent_kwargs['sensitive_data'] = accounts.sensitive_data(site, typed)  # the LLM only ever sees the x_* names
 		who = f'{profile["id"]} ({profile["email"]})'
 		if panel:
@@ -255,8 +268,9 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 			title = f'{request_text}\n\n→ {verb} {site} as {who}' if request_text else f'{verb} {site} as {who}'
 		req = RunRequest(
 			task=task, title=title, kind=kind, settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs,
-			on_done=done, review=review, proxy_source=hub.proxy_source(settings),
+			on_done=done, review=review, proxy_source=proxy_source,
 			country=country_code(profile.get('country')),  # exit where the person is, when a proxy there exists
+			fetch_code=fetch_code,
 		)
 		return req, site, profile['id']
 
@@ -270,7 +284,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 			proxy_source=hub.proxy_source(settings),
 		)
 
-	def start_group(task: str, jobs: list[Job], values: dict[str, Any], review: bool) -> dict[str, Any]:
+	async def start_group(task: str, jobs: list[Job], values: dict[str, Any], review: bool) -> dict[str, Any]:
 		"""Each job in its own session and fresh browser, side by side (up to max_parallel at once)."""
 		group = f'g{secrets.token_hex(3)}'
 		planned: list[tuple[str, RunRequest]] = []
@@ -283,7 +297,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 					if job.profile_id and job.profile_id in taken[site]:
 						skipped.append(f'{site} as {job.profile_id}: already in this request')
 						continue
-					req, site, pid = account_request(job, values, review, request_text=job.task or None, exclude=frozenset(taken[site]))
+					req, site, pid = await account_request(job, values, review, request_text=job.task or None, exclude=frozenset(taken[site]))
 					taken[site].add(pid)
 					req.title = f'{task}\n\n→ {req.title}'
 					label = f'{"Sign up" if req.kind == "signup" else "Log in"} · {site} · {pid}'
@@ -325,14 +339,15 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 				llm = build_llm(settings)
 			except (ValueError, RuntimeError):
 				llm = None  # the run below will say why; here only a written domain is understood
-			profiles = read_profiles()[0]
-			jobs = await planner.plan(task, profiles, list(accounts.SignupLog(signups_file).rows.values()), llm)
-			if jobs and any(j.is_account for j in jobs) and not profiles:
+			profiles = (await asyncio.to_thread(read_profiles))[0]
+			known = list(accounts.SignupLog(signups_file).rows.values())
+			jobs = await planner.plan(task, profiles, known, llm, **({'on_demand': True} if env.identity_api else {}))
+			if jobs and any(j.is_account for j in jobs) and not profiles and not env.identity_api:
 				raise HTTPException(400, 'To sign up or log in with your details, add a profile under Accounts (top right) first.')
 		if jobs and len(jobs) > 1:
-			return start_group(task, jobs, values, review)
+			return await start_group(task, jobs, values, review)
 		if jobs:
-			req, site, pid = account_request(jobs[0], values, review, request_text=task)
+			req, site, pid = await account_request(jobs[0], values, review, request_text=task)
 		else:
 			req = task_request(task, values, review)
 		try:
@@ -447,10 +462,10 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 
 	@app.get('/api/accounts')
 	async def accounts_state():
-		profiles, error = read_profiles()
+		profiles, error = await asyncio.to_thread(read_profiles)
 		signups = sorted(accounts.SignupLog(signups_file).rows.values(), key=lambda x: x.updated, reverse=True)
 		return {
-			'profiles_file': str(profiles_file), 'signups_file': str(signups_file), 'error': error,
+			'profiles_file': str(profiles_file), 'signups_file': str(signups_file), 'error': error, 'identity_api': env.identity_api,
 			'columns': accounts.PROFILE_COLUMNS, 'statuses': accounts.STATUSES, 'done_statuses': accounts.DONE_STATUSES,
 			'profiles': [{**{k: v for k, v in p.items() if k != 'password'}, 'has_password': bool(p.get('password'))} for p in profiles],
 			'signups': [{**{k: v for k, v in asdict(x).items() if k != 'password'}, 'has_password': bool(x.password)} for x in signups],
@@ -459,6 +474,8 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 	@app.post('/api/accounts/profiles')
 	async def save_profiles(request: Request):
 		rows = (await body_of(request)).get('profiles')
+		if env.identity_api:
+			raise HTTPException(409, f'profiles come from the identity server at {env.identity_api}: edit them there (or unset VEIL_IDENTITY_API)')
 		if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
 			raise HTTPException(400, 'profiles must be a list')
 		saved = {p['id']: p for p in read_profiles()[0]}
@@ -488,7 +505,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		body = await body_of(request)
 		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
 		job = Job(action, str(body.get('url') or ''), str(body.get('profile_id') or '') or None)
-		req, site, pid = account_request(job, values, bool(body.get('review')), panel=True)
+		req, site, pid = await account_request(job, values, bool(body.get('review')), panel=True)
 		label = f'{"Sign up" if action == "signup" else "Log in"} · {site} · {pid}'
 		return snap(start_on(runner, req, label))  # the chat's session when it's free, else alongside it
 

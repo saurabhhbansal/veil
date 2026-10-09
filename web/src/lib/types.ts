@@ -252,6 +252,7 @@ export interface SignupRow {
 
 export interface AccountsState {
   profiles_file: string;
+  identity_api: string | null; // set: people come from the company identity server, not profiles_file
   signups_file: string;
   error: string | null;
   columns: string[];

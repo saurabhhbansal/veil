@@ -25,35 +25,43 @@ def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def _cmd_signup(args: argparse.Namespace, settings: Settings) -> int:
-	from veil import accounts
+	from veil import accounts, identities
 	from veil.agent import run_task
+	from veil.geo import country_code
+	from veil.session import make_proxy_source
 
 	url, site = accounts.normalize_url(args.url), accounts.site_of(args.url)
-	profiles = accounts.load_profiles(accounts.profiles_path(settings))
+	proxy_source = make_proxy_source(settings)
+	source = identities.profile_source(settings, proxy_source)  # profiles.csv, or the identity server (VEIL_IDENTITY_API)
 	log = accounts.SignupLog(settings.accounts_dir / 'signups.csv')
-	profile, signup, exists = accounts.plan_signup(profiles, log, site, args.profile)
+	profile, signup, exists = accounts.plan_signup(source, log, site, args.profile)
 	if exists:
 		print(f'{site}: already {signup.status} with {signup.email} (profile {signup.profile_id}, {signup.updated}). Not creating another account.')
 		return 0
 
 	print(f'{site}: signing up as profile {profile["id"]} ({profile["email"]}), sticky identity {signup.identity}')
 	values = accounts.placeholders(profile, signup.password)
+	fetch_code = source.code_fetcher(profile['id'], site)
 	result = asyncio.run(
 		run_task(
-			accounts.build_task(url, values),
+			accounts.build_task(url, values, codes=bool(fetch_code)),
 			settings,
 			identity_name=signup.identity,  # same device, IP and cookies when we come back to this site
 			max_steps=args.max_steps,
 			agent_kwargs={'sensitive_data': accounts.sensitive_data(site, values)},
+			proxy_source=proxy_source,
+			country=country_code(profile.get('country')),
+			fetch_code=fetch_code,
 		)
 	)
 	log.record(accounts.finish(signup, result.output, result.attempts))
+	source.report(signup, 'signup', background=False)
 	print(f'{site}: {signup.status} - {signup.note}')
 	return 0 if signup.status in accounts.DONE_STATUSES else 1
 
 
 def _cmd_accounts(args: argparse.Namespace, settings: Settings) -> int:
-	from veil import accounts
+	from veil import accounts, identities
 
 	path = accounts.profiles_path(settings)
 	if args.action == 'init':
@@ -61,6 +69,14 @@ def _cmd_accounts(args: argparse.Namespace, settings: Settings) -> int:
 		print('Fill in one row per email you own (dob as YYYY-MM-DD; leave password blank to get a random one per site).')
 		return 0
 	if args.action == 'profiles':
+		if settings.identity_api:
+			print(f'profiles come from the identity server at {settings.identity_api} (docs/IDENTITY_API.md)')
+			listed = identities.profile_source(settings).listing()
+			for p in listed:
+				print(f'{p["id"]:12} {p["email"]}')
+			if not listed:
+				print('(it lists nobody: GET /v1/identities is optional, people are assigned per run)')
+			return 0
 		for p in accounts.load_profiles(path):
 			filled = [c for c in accounts.PROFILE_COLUMNS if p.get(c) and c not in ('id', 'email', 'password')]
 			print(f'{p["id"]:12} {p["email"]:35} {", ".join(filled)}')
