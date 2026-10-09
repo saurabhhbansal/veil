@@ -104,3 +104,44 @@ def test_save_profiles_validates_and_round_trips(tmp_path):
 def test_watched_signups_ask_the_person_instead_of_stopping():
 	assert 'request_human_help' in A.build_task('https://a.test', {'x_email': 'e'}, ask_human=True)
 	assert 'request_human_help' not in A.build_task('https://a.test', {'x_email': 'e'})
+
+
+class _FakeLLM:
+	"""Answers the sign-up intent call with a fixed verdict, and remembers what it was shown."""
+
+	def __init__(self, **verdict):
+		self.verdict, self.seen = verdict, None
+
+	async def ainvoke(self, messages, output_format):
+		self.seen = ' '.join(m.content for m in messages)
+		from types import SimpleNamespace
+
+		return SimpleNamespace(completion=output_format(**self.verdict))
+
+
+PROFILES = [{'id': 'asha', 'email': 'asha@a.com', 'phone': '+91 99999 00000'}, {'id': 'work', 'email': 'asha@work.com'}]
+
+
+@pytest.mark.asyncio
+async def test_chat_signup_intent_names_the_site_and_profile():
+	llm = _FakeLLM(is_signup=True, url='https://www.linkedin.com/signup', profile_id='work')
+	intent = await A.detect_signup('Go sign up on LinkedIn with my work email', PROFILES, llm)
+	assert intent == A.SignupIntent('https://www.linkedin.com/signup', 'work')
+	assert 'asha@work.com' in llm.seen and '+91' not in llm.seen  # only ids and emails go to the intent call
+	# a profile named outright wins over the model's guess
+	intent = await A.detect_signup('register on example.com as asha', PROFILES, _FakeLLM(is_signup=True, url='', profile_id='work'))
+	assert intent == A.SignupIntent('https://example.com', 'asha')
+
+
+@pytest.mark.asyncio
+async def test_chat_signup_intent_skips_other_tasks_and_degrades_without_the_llm():
+	never = _FakeLLM(is_signup=True, url='x', profile_id='')
+	assert await A.detect_signup('find the cheapest 1TB SSD on amazon.in', PROFILES, never) is None and never.seen is None
+	assert await A.detect_signup('register for the webinar on zoom.us', PROFILES, _FakeLLM(is_signup=False, url='', profile_id='')) is None
+	assert await A.detect_signup('sign up on news.ycombinator.com', PROFILES, None) == A.SignupIntent('https://news.ycombinator.com', None)
+	assert await A.detect_signup('sign up on LinkedIn', PROFILES, None) is None  # no LLM, no written domain: a normal task
+
+
+def test_domain_in_ignores_email_addresses():
+	assert A.domain_in('sign up with me@gmail.com on github.com/signup') == 'github.com/signup'
+	assert A.domain_in('sign up with me@gmail.com') is None

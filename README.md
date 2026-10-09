@@ -74,6 +74,9 @@ Type a task (the icons under the box set the LLM, sticky identity, engine, geo-m
   profile per email you own); **Sign-ups** starts a sign-up on a site and lists where each profile was used, with status,
   notes, retry and the password veil used. Passwords never reach the page unless you press *Show password*, and the
   agent only ever sees placeholders (`x_email`, ...). In the app, CAPTCHAs and codes during a sign-up come to you.
+- **Sign up from the chat:** "go sign up on LinkedIn" (or "create an account on reddit with my work email") runs as a
+  sign-up with your Accounts details: a keyword check, then one small LLM call finds the site's sign-up page and which
+  profile you meant (it sees only profile ids and emails). Anything else you asked in the same message is passed along.
 
 Everything runs on this PC (FastAPI server + Fortress); no hosted browser service is involved. The live view is a
 second CDP connection (screencast out, `Input.*` events in), invisible to pages. Runs are kept in `~/.veil/runs/` (step

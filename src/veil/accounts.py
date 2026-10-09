@@ -12,7 +12,9 @@ sticky identity (same device, IP and cookies), so the next visit is the same per
 """
 from __future__ import annotations
 
+import asyncio
 import csv
+import logging
 import re
 import secrets
 import string
@@ -23,8 +25,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
+	from browser_use.llm.base import BaseChatModel
+
 	from veil.config import Settings
+
+log = logging.getLogger('veil.accounts')
 
 PROFILE_COLUMNS = ['id', 'email', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'address', 'city', 'state', 'postcode', 'country', 'password']
 
@@ -225,8 +233,9 @@ def sensitive_data(site: str, values: dict[str, str]) -> dict[str, dict[str, str
 	return {f'https://*.{site}': values}
 
 
-def build_task(url: str, values: dict[str, str], ask_human: bool = False) -> str:
-	"""ask_human: someone is watching (the web UI), so the agent hands CAPTCHAs and codes to them instead of stopping."""
+def build_task(url: str, values: dict[str, str], ask_human: bool = False, request: str | None = None) -> str:
+	"""ask_human: someone is watching (the web UI), so the agent hands CAPTCHAs and codes to them instead of stopping.
+	request: the user's own words when the sign-up came from a chat message, so anything else they asked is kept."""
 	names = ', '.join(sorted(values))
 	blocker = (
 		"- If you hit a CAPTCHA, a phone/SMS code, an email code you can't see, or anything else only I can do, call request_human_help "
@@ -234,8 +243,9 @@ def build_task(url: str, values: dict[str, str], ask_human: bool = False) -> str
 		if ask_human
 		else "- If you hit a CAPTCHA, a phone/SMS code, an email code you can't see, or anything else only I can do, stop there."
 	)
+	asked = f'\nWhat I asked, in my words: "{request.strip()}"\n' if request else ''
 	return f"""Create an account for me at {url} using my own details.
-
+{asked}
 My details are provided as placeholders ({names}). Type them with <secret>name</secret>.
 For a date of birth split into parts use x_dob_day / x_dob_month (or x_dob_month_name) / x_dob_year; for one box use x_dob (YYYY-MM-DD) or x_dob_slash (DD/MM/YYYY), whichever the field's format asks for.
 Use x_password for both password and confirm-password fields.
@@ -271,3 +281,84 @@ def parse_status(output: str | None) -> tuple[str, str]:
 			status = m.group(1).lower()
 			return (status, m.group(2).strip()) if status in STATUSES else ('failed', line.strip())
 	return 'failed', (output or 'no answer from the agent').strip()[-300:]
+
+
+# --- sign-ups asked for in chat ("go sign up on LinkedIn") ----------------------------------------
+
+_SIGNUP_HINT = re.compile(
+	r'\b(sign[\s-]?up|signup|register|registration|enrol+|(create|make|open|set\s*up)\s+(an?\s+|my\s+|new\s+)*account|join)\b', re.I
+)
+_DOMAIN = re.compile(r"""(?<![@\w.-])((?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s,;"')]*)?)""", re.I)
+
+
+def looks_like_signup(text: str) -> bool:
+	"""Cheap first check, so ordinary tasks never pay for the intent call."""
+	return bool(_SIGNUP_HINT.search(text or ''))
+
+
+def domain_in(text: str) -> str | None:
+	"""The first web address in the text ('linkedin.com', 'https://x.io/join'); email addresses don't count."""
+	m = _DOMAIN.search(text or '')
+	return m.group(1).rstrip('.') if m else None
+
+
+def profile_in(text: str, profiles: list[dict[str, str]]) -> str | None:
+	"""A profile the text names by email or by id ('as asha', 'with me@a.com')."""
+	low = (text or '').lower()
+	for p in profiles:
+		if p.get('email') and p['email'].lower() in low:
+			return p['id']
+	for p in profiles:
+		if re.search(rf'(?<![\w@.-]){re.escape(p["id"].lower())}(?![\w@-])', low):
+			return p['id']
+	return None
+
+
+@dataclass
+class SignupIntent:
+	url: str
+	profile_id: str | None = None
+
+
+class _Intent(BaseModel):
+	is_signup: bool
+	url: str
+	profile_id: str
+
+
+_INTENT_PROMPT = """You route tasks typed into a browser agent. Decide whether the task asks to create a NEW account for the user on a website (sign up / register / join / create an account).
+Not a sign-up: logging in, registering for an event or webinar, signing up for a newsletter without an account, or anything else.
+If it is a sign-up, url = that site's sign-up page if you know it (e.g. LinkedIn -> https://www.linkedin.com/signup), otherwise its home page. Otherwise url = "".
+profile_id = the id of the profile the user says to use (by id, name or email), from this list, otherwise "":
+{profiles}"""
+
+
+async def detect_signup(task: str, profiles: list[dict[str, str]], llm: BaseChatModel | None, timeout: float = 30) -> SignupIntent | None:
+	"""Is this chat message a sign-up, and where? None for anything else.
+
+	A keyword check first; then one small LLM call names the site ("LinkedIn" -> linkedin.com/signup) and the
+	profile. Only profile ids and emails go into that call. Without the LLM, only a written domain is understood.
+	"""
+	if not looks_like_signup(task):
+		return None
+	named = profile_in(task, profiles)
+	if llm is not None:
+		from browser_use.llm.messages import SystemMessage, UserMessage
+
+		listing = '\n'.join(f'- {p["id"]}: {p.get("email", "")}' for p in profiles) or '(none)'
+		try:
+			res = await asyncio.wait_for(
+				llm.ainvoke([SystemMessage(content=_INTENT_PROMPT.format(profiles=listing)), UserMessage(content=task)], output_format=_Intent),
+				timeout,
+			)
+			intent = res.completion
+			if not intent.is_signup:
+				return None
+			url = (intent.url or '').strip() or domain_in(task)
+			if url:
+				ids = {p['id'] for p in profiles}
+				return SignupIntent(normalize_url(url), named or (intent.profile_id if intent.profile_id in ids else None))
+		except Exception as e:
+			log.warning('sign-up intent check failed (%s); falling back to a written domain', e)
+	url = domain_in(task)
+	return SignupIntent(normalize_url(url), named) if url else None

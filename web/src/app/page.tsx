@@ -88,7 +88,7 @@ function Home({ onAccounts }: { onAccounts: () => void }) {
           <h1 className="text-3xl font-semibold text-zinc-100">What should the agent do?</h1>
           <p className="text-sm text-zinc-500 max-w-md mx-auto">
             It works in a Fortress stealth browser with a fresh, coherent device and exit IP. You can watch it live and take over any time, and
-            it hands you the browser when a CAPTCHA needs a person.
+            it hands you the browser when a CAPTCHA needs a person. Say “sign up on LinkedIn” and it uses your details from Accounts.
           </p>
         </div>
 

@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 
 from veil import accounts
 from veil.config import Settings
+from veil.llm import build_llm
 from veil.webui.live import LiveView
 from veil.webui.manager import ENGINES, PROVIDERS, saved_identities, settings_from_ui
 from veil.webui.runner import AgentRunner, RunRequest
@@ -135,6 +136,46 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 
 		return StreamingResponse(stream(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
+	profiles_file, signups_file = accounts.profiles_path(env), env.accounts_dir / 'signups.csv'
+
+	def read_profiles() -> tuple[list[dict[str, str]], str | None]:
+		try:
+			return accounts.load_profiles(profiles_file, allow_empty=True), None
+		except ValueError as e:
+			return [], str(e)
+
+	def start_signup(raw_url: str, profile_id: str | None, values: dict[str, Any], request_text: str | None = None) -> dict:
+		"""Sign up on a site as one of your profiles: its details as secrets, its own sticky identity, status logged."""
+		if runner.busy:
+			raise HTTPException(409, 'a task is already running: stop it first')
+		try:
+			raw = raw_url.strip()
+			site, url = accounts.site_of(raw), accounts.normalize_url(raw)
+			profiles = accounts.load_profiles(profiles_file)
+			log_ = accounts.SignupLog(signups_file)
+			profile, row, exists = accounts.plan_signup(profiles, log_, site, profile_id)
+		except ValueError as e:
+			raise HTTPException(400, str(e)) from e
+		if exists:
+			raise HTTPException(409, f'{site} already has an account ({row.status.replace("_", " ")}) with {row.email}. See Accounts; not creating another.')
+		values = {k: v for k, v in values.items() if k != 'stealth_settings.identity'}  # a sign-up always uses its own identity
+		try:
+			settings, _, max_steps, agent_kwargs = settings_from_ui(values, env)
+		except (ValueError, RuntimeError) as e:
+			raise HTTPException(400, str(e)) from e
+		typed = accounts.placeholders(profile, row.password)
+		agent_kwargs['sensitive_data'] = accounts.sensitive_data(site, typed)  # the LLM only ever sees the x_* names
+
+		def done(result) -> None:
+			log_.record(accounts.finish(row, result.output, result.attempts))
+
+		runner.start(RunRequest(
+			task=accounts.build_task(url, typed, ask_human=True, request=request_text),
+			title=f'{request_text}\n\n→ Signing up at {site} as {profile["id"]} ({profile["email"]})' if request_text else f'Sign up at {site} as {profile["id"]} ({profile["email"]})',
+			kind='signup', settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs, on_done=done,
+		))
+		return runner.snapshot()
+
 	@app.post('/api/run')
 	async def run(request: Request):
 		body = await request.json()
@@ -146,6 +187,21 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
 		try:
 			settings, identity, max_steps, agent_kwargs = settings_from_ui(values, env)
+		except (ValueError, RuntimeError) as e:
+			raise HTTPException(400, str(e)) from e
+		# "Go sign up on LinkedIn": run it as a sign-up with your own details, like the Accounts panel does.
+		if accounts.looks_like_signup(task):
+			profiles = read_profiles()[0]
+			try:
+				llm = build_llm(settings)
+			except (ValueError, RuntimeError):
+				llm = None  # the run below will say why; here only a written domain is understood
+			intent = await accounts.detect_signup(task, profiles, llm)
+			if intent:
+				if not profiles:
+					raise HTTPException(400, 'To sign up with your details, add a profile under Accounts (top right) first.')
+				return start_signup(intent.url, intent.profile_id, values, request_text=task)
+		try:
 			runner.start(RunRequest(task=task, settings=settings, identity=identity, max_steps=max_steps, agent_kwargs=agent_kwargs))
 		except (ValueError, RuntimeError) as e:
 			raise HTTPException(400, str(e)) from e
@@ -178,14 +234,6 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		return runner.snapshot()
 
 	# --- accounts: your own sign-up details, and where each was used ---------------------------
-
-	profiles_file, signups_file = accounts.profiles_path(env), env.accounts_dir / 'signups.csv'
-
-	def read_profiles() -> tuple[list[dict[str, str]], str | None]:
-		try:
-			return accounts.load_profiles(profiles_file, allow_empty=True), None
-		except ValueError as e:
-			return [], str(e)
 
 	@app.get('/api/accounts')
 	async def accounts_state():
@@ -228,31 +276,8 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 	@app.post('/api/accounts/signup')
 	async def signup(request: Request):
 		body = await request.json()
-		if runner.busy:
-			raise HTTPException(409, 'a task is already running: stop it first')
-		try:
-			raw = str(body.get('url') or '').strip()
-			site, url = accounts.site_of(raw), accounts.normalize_url(raw)
-			profiles = accounts.load_profiles(profiles_file)
-			log_ = accounts.SignupLog(signups_file)
-			profile, row, exists = accounts.plan_signup(profiles, log_, site, str(body.get('profile_id') or '') or None)
-		except ValueError as e:
-			raise HTTPException(400, str(e)) from e
-		if exists:
-			raise HTTPException(409, f'{site} already has an account ({row.status}) with {row.email}; not creating another')
-		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS and k != 'stealth_settings.identity'}
-		settings, _, max_steps, agent_kwargs = settings_from_ui(values, env)
-		typed = accounts.placeholders(profile, row.password)
-		agent_kwargs['sensitive_data'] = accounts.sensitive_data(site, typed)  # the LLM only ever sees the x_* names
-
-		def done(result) -> None:
-			log_.record(accounts.finish(row, result.output, result.attempts))
-
-		runner.start(RunRequest(
-			task=accounts.build_task(url, typed, ask_human=True), title=f'Sign up at {site} as {profile["id"]} ({profile["email"]})',
-			kind='signup', settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs, on_done=done,
-		))
-		return runner.snapshot()
+		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
+		return start_signup(str(body.get('url') or ''), str(body.get('profile_id') or '') or None, values)
 
 	@app.get('/api/runs/{run}/{name}')
 	async def run_file(run: str, name: str):

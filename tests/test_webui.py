@@ -232,3 +232,45 @@ async def test_accounts_api_keeps_passwords_server_side_and_records_signups(tmp_
 		assert row['status'] == 'verify_email' and 'password' not in row
 		assert (await c.post('/api/accounts/reveal', json={'site': 'shop.test'})).json()['password'] == 'S3cret!'
 		assert (await c.post('/api/accounts/signup', json={'url': 'shop.test'})).status_code == 409  # one account per site
+
+
+
+@pytest.mark.asyncio
+async def test_chat_task_asking_to_sign_up_runs_as_a_signup(tmp_path, monkeypatch):
+	from httpx import ASGITransport, AsyncClient
+
+	from veil import accounts
+	from veil.webui import server as server_mod
+	from veil.webui.server import create_app
+
+	seen = {}
+
+	async def fake_run_task(task, settings, identity_name=None, max_steps=None, *, hooks, agent_kwargs):
+		seen.update(task=task, identity=identity_name, kwargs=agent_kwargs)
+		return TaskResult(ok=True, output='SIGNUP_STATUS: signed_up - welcome page', attempts=[])
+
+	def no_llm(settings):
+		raise RuntimeError('no key')
+
+	monkeypatch.setattr(runner_mod, 'run_task', fake_run_task)
+	monkeypatch.setattr(server_mod, 'build_llm', no_llm)
+	env = Settings(data_dir=tmp_path)
+	app = create_app(env, port=7788)
+	async with AsyncClient(transport=ASGITransport(app=app), base_url='http://127.0.0.1:7788') as c:
+		r = await c.post('/api/run', json={'task': 'go sign up on shop.test and tell me the welcome text', 'values': {}})
+		assert r.status_code == 400 and 'Accounts' in r.json()['detail']  # no profiles yet
+		accounts.save_profiles(accounts.profiles_path(env), [{'id': 'me', 'email': 'me@a.com'}])
+
+		r = await c.post('/api/run', json={'task': 'go sign up on shop.test and tell me the welcome text', 'values': {}})
+		assert r.status_code == 200 and 'Signing up at shop.test as me' in r.json()['events'][0]['text']
+		await asyncio.wait_for(app.state.runner._task, timeout=2)
+		assert seen['identity'] == 'acct-shop.test-me' and 'x_email' in seen['task'] and 'tell me the welcome text' in seen['task']
+		assert seen['kwargs']['sensitive_data']['https://*.shop.test']['x_email'] == 'me@a.com'
+		assert accounts.SignupLog(env.accounts_dir / 'signups.csv').get('shop.test').status == 'signed_up'
+
+		r = await c.post('/api/run', json={'task': 'sign up on shop.test again'})
+		assert r.status_code == 409 and 'already has an account' in r.json()['detail']
+
+		await c.post('/api/run', json={'task': 'find the cheapest SSD on amazon.in'})
+		await asyncio.wait_for(app.state.runner._task, timeout=2)
+		assert 'sensitive_data' not in seen['kwargs'] and seen['identity'] is None  # ordinary tasks are untouched
