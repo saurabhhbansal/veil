@@ -45,6 +45,7 @@ export function RunView({ runId, liveBusy, onBack }: { runId: string; liveBusy: 
   }
 
   const snap: Snapshot = {
+    session: "", group: null, label: "", sessions: [],
     version: 0, status: "idle", busy: false, events: run?.events ?? [], identity: run?.identity ?? null, human: null,
     browser_open: false, gif: null, result_file: null, run_id: runId, has_review: false,
   };

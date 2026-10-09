@@ -2,22 +2,32 @@
 
 Everything runs on this PC: the agent, Fortress, and this server. No hosted browser service is involved.
 
+Sessions: 'main' is the chat; a request split into jobs ("create 2 accounts, one per profile") runs each job
+in its own session and browser side by side. Session endpoints take `session` (JSON body, or ?session= for
+GET/SSE/WebSocket) and default to 'main'.
+
     GET  /api/config            defaults from .env, for the settings bar (no secrets)
-    GET  /api/state             the current run (AgentRunner.snapshot)
-    GET  /api/events            the same, pushed as server-sent events whenever it changes
-    POST /api/run               {task, values} start a task (values use the setting ids of manager.settings_from_ui)
+    GET  /api/state             a session's run (AgentRunner.snapshot) plus every session's summary
+    GET  /api/events            the same, pushed as server-sent events whenever anything changes
+    POST /api/run               {task, values, session?} start a task (values use the setting ids of manager.settings_from_ui).
+                                Account requests and split requests are planned first (veil.planner).
     POST /api/stop | /api/pause | /api/clear
     POST /api/takeover          the person takes the browser (pauses the agent)
     POST /api/handback          {note} the person is done; the agent carries on
     POST /api/steer             {text} an instruction the agent reads at its next step
+    POST /api/sessions/close    {session} drop a finished side session from the app (its run stays in history)
     GET  /api/runs              past runs, newest first; GET /api/runs/<id> one run's transcript, recording, review
     POST /api/runs/<id>/review  judge a past run now (the "Review runs" toggle does it after each run)
+    POST /api/runs/<id>/rename  {title}
+    POST /api/runs/<id>/delete  remove the run's folder (not while it's running)
     WS   /api/live              live view: JPEG frames out, mouse/keyboard in (see live.py)
     GET  /api/runs/<run>/<file> step screenshots, recording.gif, result.json
     GET  /api/accounts          your sign-up profiles and the sign-up log (passwords left out)
     POST /api/accounts/profiles {profiles} replace profiles.csv; a profile sent without "password" keeps its saved one
     POST /api/accounts/signup   {url, profile_id?, values} sign up on a site as one of your profiles (a normal run)
-    POST /api/accounts/reveal   {site} the password veil used on that site
+    POST /api/accounts/login    {url, profile_id?, values} log in to an account you have there
+    POST /api/accounts/reveal   {site, profile_id} the password veil used on that site
+    ... and /api/keys, /api/llm/default, /api/proxies* (admin.py)
 
 The UI has no login, so requests are only accepted from this PC's own origin (or the dev server's): another
 website open in the same browser can't drive the agent or the live view.
@@ -28,7 +38,10 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
+import secrets
+from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -37,12 +50,14 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from veil import accounts
+from veil import accounts, planner
 from veil.config import Settings
-from veil.llm import build_llm
+from veil.llm import EFFORTS, KEY_ENV, MODELS, build_llm
+from veil.planner import Job
+from veil.webui import admin
 from veil.webui.live import LiveView
 from veil.webui.manager import ENGINES, PROVIDERS, saved_identities, settings_from_ui
-from veil.webui.runner import AgentRunner, RunRequest, list_runs, load_run, review_saved_run
+from veil.webui.runner import AgentRunner, RunRequest, SessionHub, delete_run, list_runs, load_run, rename_run, review_saved_run
 
 log = logging.getLogger('veil.webui.server')
 
@@ -50,7 +65,7 @@ WEB_DIST = Path(__file__).resolve().parents[3] / 'web' / 'out'  # `npm run build
 DEV_ORIGINS = {'http://localhost:3000', 'http://127.0.0.1:3000'}  # `npm run dev` in web/
 # Which UI values a request may set: the ids settings_from_ui reads. Secrets (API key) are allowed in, never out.
 UI_VALUE_IDS = {
-	'agent_settings.llm_provider', 'agent_settings.llm_model', 'agent_settings.llm_api_key', 'agent_settings.llm_temperature',
+	'agent_settings.llm_provider', 'agent_settings.llm_model', 'agent_settings.llm_api_key', 'agent_settings.llm_temperature', 'agent_settings.llm_effort',
 	'agent_settings.max_steps', 'agent_settings.use_vision', 'agent_settings.max_actions', 'agent_settings.extend_system_prompt',
 	'stealth_settings.engine', 'stealth_settings.headful', 'stealth_settings.identity', 'stealth_settings.max_attempts',
 	'stealth_settings.geo_match',
@@ -83,12 +98,13 @@ def origin_ok(origin: str | None, allowed: set[str]) -> bool:
 
 
 def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev: bool = False, runner: AgentRunner | None = None) -> FastAPI:
-	runner = runner or AgentRunner(runs_dir=env.data_dir / 'runs')
+	hub = SessionHub(env.data_dir / 'runs', main=runner, max_parallel=env.max_parallel)
+	runner = hub.main
 	runner.runs_dir.mkdir(parents=True, exist_ok=True)
 	allowed = allowed_origins(host, port, dev)
 	hosts = allowed_origins(host, port, dev=False)
 	app = FastAPI(title='veil', docs_url=None, redoc_url=None, openapi_url=None)
-	app.state.runner = runner
+	app.state.runner, app.state.hub = runner, hub
 
 	@app.middleware('http')
 	async def guard(request: Request, call_next):
@@ -108,29 +124,52 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 
 	@app.get('/api/config')
 	async def config():
+		keys = {p: bool(env.llm_api_key if p == env.llm_provider and env.llm_api_key else os.environ.get(var)) for p, var in KEY_ENV.items()}
 		return {
-			'llm_provider': env.llm_provider, 'llm_model': env.llm_model, 'has_api_key': bool(env.llm_api_key),
-			'providers': PROVIDERS, 'engine': env.engine, 'engines': ENGINES, 'headless': env.headless,
-			'geo_match': env.geo_match, 'max_attempts': env.max_attempts, 'max_steps': env.max_steps,
+			'llm_provider': env.llm_provider, 'llm_model': env.llm_model, 'llm_effort': env.llm_effort,
+			'has_api_key': keys.get(env.llm_provider, False), 'keys': keys, 'providers': PROVIDERS, 'efforts': EFFORTS, 'models': MODELS,
+			'engine': env.engine, 'engines': ENGINES, 'headless': env.headless,
+			'geo_match': env.geo_match, 'max_attempts': env.max_attempts, 'max_steps': env.max_steps, 'max_parallel': hub.max_parallel,
 			'identities': saved_identities(env),
 			'proxy': 'gateway' if env.proxy_gateway else 'list' if env.proxy_file else None,
 			'proxy_detail': str(env.proxy_file) if env.proxy_file and not env.proxy_gateway else None,
 		}
 
+	# --- sessions --------------------------------------------------------------------------------
+
+	def session_of(sid: Any) -> AgentRunner:
+		r = hub.get(str(sid) if sid else None)
+		if not r:
+			raise HTTPException(404, 'that session was closed')
+		return r
+
+	def snap(r: AgentRunner, **extra: Any) -> dict[str, Any]:
+		return {**r.snapshot(), 'sessions': hub.summaries(), **extra}
+
+	async def body_of(request: Request) -> dict[str, Any]:
+		if not request.headers.get('content-type', '').startswith('application/json'):
+			return {}
+		try:
+			body = await request.json()
+		except ValueError:
+			return {}
+		return body if isinstance(body, dict) else {}
+
 	@app.get('/api/state')
-	async def state():
-		return runner.snapshot()
+	async def state(session: str | None = None):
+		return snap(hub.get(session) or runner)
 
 	@app.get('/api/events')
-	async def events(request: Request):
+	async def events(request: Request, session: str | None = None):
 		async def stream():
 			last = None
 			idle = 0
 			while not await request.is_disconnected():
-				key = (runner.version, runner.status)
+				r = hub.get(session) or runner  # a closed session falls back to the chat
+				key = (hub.key(), r.id)
 				if key != last:
 					last, idle = key, 0
-					yield f'data: {json.dumps(runner.snapshot(), default=str)}\n\n'
+					yield f'data: {json.dumps(snap(r), default=str)}\n\n'
 				else:
 					idle += 1
 					if idle % 50 == 0:
@@ -138,6 +177,17 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 				await asyncio.sleep(0.3)
 
 		return StreamingResponse(stream(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+	def start_on(target: AgentRunner | None, req: RunRequest, label: str) -> AgentRunner:
+		"""Run in `target` when it's free; otherwise in a new side session, so it runs alongside."""
+		if target is None or target.busy:
+			group = f'g{secrets.token_hex(3)}'
+			target = hub.add(group, label)
+			req.gate, req.group = hub.gate, group
+		target.start(req)
+		return target
+
+	# --- account jobs: sign up / log in with your own details ----------------------------------
 
 	profiles_file, signups_file = accounts.profiles_path(env), env.accounts_dir / 'signups.csv'
 
@@ -147,96 +197,202 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		except ValueError as e:
 			return [], str(e)
 
-	def start_signup(raw_url: str, profile_id: str | None, values: dict[str, Any], request_text: str | None = None, review: bool = False) -> dict:
-		"""Sign up on a site as one of your profiles: its details as secrets, its own sticky identity, status logged."""
-		if runner.busy:
-			raise HTTPException(409, 'a task is already running: stop it first')
+	def account_request(
+		job: Job, values: dict[str, Any], review: bool, *, request_text: str | None = None, panel: bool = False, exclude: frozenset[str] = frozenset()
+	) -> tuple[RunRequest, str, str]:
+		"""A sign-up / log-in job -> (RunRequest, site, profile id). The details go in as secrets only."""
 		try:
-			raw = raw_url.strip()
+			raw = job.url.strip()
 			site, url = accounts.site_of(raw), accounts.normalize_url(raw)
 			profiles = accounts.load_profiles(profiles_file)
 			log_ = accounts.SignupLog(signups_file)
-			profile, row, exists = accounts.plan_signup(profiles, log_, site, profile_id)
 		except ValueError as e:
 			raise HTTPException(400, str(e)) from e
-		if exists:
-			raise HTTPException(409, f'{site} already has an account ({row.status.replace("_", " ")}) with {row.email}. See Accounts; not creating another.')
-		values = {k: v for k, v in values.items() if k != 'stealth_settings.identity'}  # a sign-up always uses its own identity
+		action, if_registered = job.action, 'stop'
+		if action == 'auto':  # "log in or sign up": log in where veil knows the account, else sign up (or log in if it exists)
+			row = log_.get(site, job.profile_id)
+			action, if_registered = ('login' if row and row.status in accounts.DONE_STATUSES else 'signup'), 'login'
+		try:
+			if action == 'signup':
+				profile, row, exists = accounts.plan_signup(profiles, log_, site, job.profile_id, exclude)
+				if exists:
+					raise HTTPException(
+						409,
+						f'{site} already has an account ({row.status.replace("_", " ")}) with {row.email}. Not creating another; '
+						f'say "log in to {site}" to use it.',
+					)
+				typed = accounts.placeholders(profile, row.password)
+				task = accounts.build_task(url, typed, ask_human=True, request=request_text, if_registered=if_registered)
+
+				def done(result) -> None:
+					log_.record(accounts.finish(row, result.output, result.attempts))
+
+				verb, kind = 'Signing up at', 'signup'
+			else:
+				profile, row, logged = accounts.plan_login(profiles, log_, site, job.profile_id)
+				typed = accounts.placeholders(profile, row.password)
+				task = accounts.build_login_task(url, typed, ask_human=True, request=request_text)
+
+				def done(result) -> None:
+					rec = accounts.finish_login(row, result.output, result.attempts, logged)
+					if rec:
+						log_.record(rec)
+
+				verb, kind = 'Logging in at', 'login'
+		except ValueError as e:
+			raise HTTPException(400, str(e)) from e
+		values = {k: v for k, v in values.items() if k != 'stealth_settings.identity'}  # an account always uses its own identity
 		try:
 			settings, _, max_steps, agent_kwargs = settings_from_ui(values, env)
 		except (ValueError, RuntimeError) as e:
 			raise HTTPException(400, str(e)) from e
-		typed = accounts.placeholders(profile, row.password)
 		agent_kwargs['sensitive_data'] = accounts.sensitive_data(site, typed)  # the LLM only ever sees the x_* names
+		who = f'{profile["id"]} ({profile["email"]})'
+		if panel:
+			title = f'{"Sign up" if kind == "signup" else "Log in"} at {site} as {who}'
+		else:
+			title = f'{request_text}\n\n→ {verb} {site} as {who}' if request_text else f'{verb} {site} as {who}'
+		req = RunRequest(
+			task=task, title=title, kind=kind, settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs,
+			on_done=done, review=review, proxy_source=hub.proxy_source(settings),
+		)
+		return req, site, profile['id']
 
-		def done(result) -> None:
-			log_.record(accounts.finish(row, result.output, result.attempts))
-
-		runner.start(RunRequest(
-			task=accounts.build_task(url, typed, ask_human=True, request=request_text),
-			title=f'{request_text}\n\n→ Signing up at {site} as {profile["id"]} ({profile["email"]})' if request_text else f'Sign up at {site} as {profile["id"]} ({profile["email"]})',
-			kind='signup', settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs, on_done=done, review=review,
-		))
-		return runner.snapshot()
-
-	@app.post('/api/run')
-	async def run(request: Request):
-		body = await request.json()
-		task = str(body.get('task') or '').strip()
-		if not task:
-			raise HTTPException(400, 'enter a task')
-		if runner.busy:
-			raise HTTPException(409, 'a task is already running: stop it first')
-		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
-		review = bool(body.get('review'))
+	def task_request(task: str, values: dict[str, Any], review: bool, title: str | None = None) -> RunRequest:
 		try:
 			settings, identity, max_steps, agent_kwargs = settings_from_ui(values, env)
 		except (ValueError, RuntimeError) as e:
 			raise HTTPException(400, str(e)) from e
-		# "Go sign up on LinkedIn": run it as a sign-up with your own details, like the Accounts panel does.
-		if accounts.looks_like_signup(task):
-			profiles = read_profiles()[0]
+		return RunRequest(
+			task=task, title=title, settings=settings, identity=identity, max_steps=max_steps, agent_kwargs=agent_kwargs, review=review,
+			proxy_source=hub.proxy_source(settings),
+		)
+
+	def start_group(task: str, jobs: list[Job], values: dict[str, Any], review: bool) -> dict[str, Any]:
+		"""Each job in its own session and fresh browser, side by side (up to max_parallel at once)."""
+		group = f'g{secrets.token_hex(3)}'
+		planned: list[tuple[str, RunRequest]] = []
+		skipped: list[str] = []
+		taken: dict[str, set[str]] = defaultdict(set)  # site -> profiles this request already uses there
+		for job in jobs:
+			try:
+				if job.is_account:
+					site = accounts.site_of(job.url)
+					if job.profile_id and job.profile_id in taken[site]:
+						skipped.append(f'{site} as {job.profile_id}: already in this request')
+						continue
+					req, site, pid = account_request(job, values, review, request_text=job.task or None, exclude=frozenset(taken[site]))
+					taken[site].add(pid)
+					req.title = f'{task}\n\n→ {req.title}'
+					label = f'{"Sign up" if req.kind == "signup" else "Log in"} · {site} · {pid}'
+				else:
+					req = task_request(job.task, values, review, title=f'{task}\n\n→ {job.task}' if job.task != task else None)
+					label = job.task[:60]
+			except (HTTPException, ValueError) as e:
+				skipped.append(str(e.detail if isinstance(e, HTTPException) else e))
+				continue
+			req.gate, req.group = hub.gate, group
+			planned.append((label, req))
+		if not planned:
+			raise HTTPException(409 if skipped else 400, '; '.join(skipped) or 'nothing to run')
+		started = []
+		for label, req in planned:
+			r = hub.add(group, label)
+			r.start(req)
+			started.append(r)
+		return snap(started[0], group=group, skipped=skipped)
+
+	@app.post('/api/run')
+	async def run(request: Request):
+		body = await body_of(request)
+		task = str(body.get('task') or '').strip()
+		if not task:
+			raise HTTPException(400, 'enter a task')
+		target = session_of(body.get('session'))
+		if target.busy:
+			raise HTTPException(409, 'a task is already running in this session: stop it first')
+		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
+		review = bool(body.get('review'))
+		jobs = None
+		if planner.worth_planning(task):
+			try:
+				settings = settings_from_ui(values, env)[0]
+			except (ValueError, RuntimeError) as e:
+				raise HTTPException(400, str(e)) from e
 			try:
 				llm = build_llm(settings)
 			except (ValueError, RuntimeError):
 				llm = None  # the run below will say why; here only a written domain is understood
-			intent = await accounts.detect_signup(task, profiles, llm)
-			if intent:
-				if not profiles:
-					raise HTTPException(400, 'To sign up with your details, add a profile under Accounts (top right) first.')
-				return start_signup(intent.url, intent.profile_id, values, request_text=task, review=review)
+			profiles = read_profiles()[0]
+			jobs = await planner.plan(task, profiles, list(accounts.SignupLog(signups_file).rows.values()), llm)
+			if jobs and any(j.is_account for j in jobs) and not profiles:
+				raise HTTPException(400, 'To sign up or log in with your details, add a profile under Accounts (top right) first.')
+		if jobs and len(jobs) > 1:
+			return start_group(task, jobs, values, review)
+		if jobs:
+			req, site, pid = account_request(jobs[0], values, review, request_text=task)
+		else:
+			req = task_request(task, values, review)
 		try:
-			runner.start(RunRequest(task=task, settings=settings, identity=identity, max_steps=max_steps, agent_kwargs=agent_kwargs, review=review))
+			target.start(req)
 		except (ValueError, RuntimeError) as e:
 			raise HTTPException(400, str(e)) from e
-		return runner.snapshot()
+		return snap(target)
 
 	@app.post('/api/stop')
-	async def stop():
-		runner.stop()
-		return runner.snapshot()
+	async def stop(request: Request):
+		r = session_of((await body_of(request)).get('session'))
+		r.stop()
+		return snap(r)
 
 	@app.post('/api/pause')
-	async def pause():
-		runner.pause_resume()
-		return runner.snapshot()
+	async def pause(request: Request):
+		r = session_of((await body_of(request)).get('session'))
+		r.pause_resume()
+		return snap(r)
 
 	@app.post('/api/takeover')
-	async def takeover():
-		runner.take_over()
-		return runner.snapshot()
+	async def takeover(request: Request):
+		r = session_of((await body_of(request)).get('session'))
+		r.take_over()
+		return snap(r)
 
 	@app.post('/api/handback')
 	async def handback(request: Request):
-		body = await request.json() if request.headers.get('content-type', '').startswith('application/json') else {}
-		runner.hand_back(str(body.get('note') or '')[:2000])
-		return runner.snapshot()
+		body = await body_of(request)
+		r = session_of(body.get('session'))
+		r.hand_back(str(body.get('note') or '')[:2000])
+		return snap(r)
 
 	@app.post('/api/steer')
 	async def steer(request: Request):
-		if not runner.steer(str((await request.json()).get('text') or '')):
+		body = await body_of(request)
+		r = session_of(body.get('session'))
+		if not r.steer(str(body.get('text') or '')):
 			raise HTTPException(409, 'nothing to steer: no run in progress')
-		return runner.snapshot()
+		return snap(r)
+
+	@app.post('/api/clear')
+	async def clear(request: Request):
+		"""The main chat starts over (finished side sessions close too); a side session closes."""
+		r = session_of((await body_of(request)).get('session'))
+		if r is runner:
+			await runner.clear()
+			hub.close_idle()
+		elif r.busy:
+			raise HTTPException(409, 'that session is still running: stop it first')
+		else:
+			hub.close(r.id)
+		return snap(runner)
+
+	@app.post('/api/sessions/close')
+	async def close_session(request: Request):
+		r = session_of((await body_of(request)).get('session'))
+		if r is runner or not hub.close(r.id):
+			raise HTTPException(409, 'only a finished side session can be closed')
+		return snap(runner)
+
+	# --- run history -------------------------------------------------------------------------
 
 	@app.get('/api/runs')
 	async def runs():
@@ -251,9 +407,10 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 
 	@app.post('/api/runs/{run_id}/review')
 	async def review_run(run_id: str, request: Request):
-		body = await request.json() if request.headers.get('content-type', '').startswith('application/json') else {}
+		body = await body_of(request)
 		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
-		if runner.busy and runner.run_dir and runner.run_dir.name == run_id:
+		live = hub.find_run(run_id)
+		if live and live.busy:
 			raise HTTPException(409, 'that run is still going')
 		try:
 			settings = settings_from_ui(values, env)[0]
@@ -262,10 +419,27 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 			raise HTTPException(400, str(e)) from e
 		return await asyncio.to_thread(load_run, runner.runs_dir, run_id)
 
-	@app.post('/api/clear')
-	async def clear():
-		await runner.clear()
-		return runner.snapshot()
+	@app.post('/api/runs/{run_id}/rename')
+	async def rename(run_id: str, request: Request):
+		title = ' '.join(str((await body_of(request)).get('title') or '').split())[:200]
+		if not title:
+			raise HTTPException(400, 'enter a name')
+		if not await asyncio.to_thread(rename_run, runner.runs_dir, run_id, title):
+			raise HTTPException(404, 'no such run')
+		return {'ok': True}
+
+	@app.post('/api/runs/{run_id}/delete')
+	async def delete(run_id: str):
+		live = hub.find_run(run_id)
+		if live and live.busy:
+			raise HTTPException(409, 'that run is still going: stop it first')
+		if live is runner:
+			await runner.clear()  # the chat was showing it
+		elif live:
+			hub.close(live.id)
+		if not await asyncio.to_thread(delete_run, runner.runs_dir, run_id):
+			raise HTTPException(404, 'no such run')
+		return {'ok': True}
 
 	# --- accounts: your own sign-up details, and where each was used ---------------------------
 
@@ -282,7 +456,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 
 	@app.post('/api/accounts/profiles')
 	async def save_profiles(request: Request):
-		rows = (await request.json()).get('profiles')
+		rows = (await body_of(request)).get('profiles')
 		if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
 			raise HTTPException(400, 'profiles must be a list')
 		saved = {p['id']: p for p in read_profiles()[0]}
@@ -302,16 +476,29 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 
 	@app.post('/api/accounts/reveal')
 	async def reveal(request: Request):
-		row = accounts.SignupLog(signups_file).get(str((await request.json()).get('site') or ''))
+		body = await body_of(request)
+		row = accounts.SignupLog(signups_file).get(str(body.get('site') or ''), str(body.get('profile_id') or '') or None)
 		if not row:
 			raise HTTPException(404, 'no sign-up for that site')
 		return {'site': row.site, 'email': row.email, 'password': row.password}
 
+	async def account_from_panel(request: Request, action: str):
+		body = await body_of(request)
+		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
+		job = Job(action, str(body.get('url') or ''), str(body.get('profile_id') or '') or None)
+		req, site, pid = account_request(job, values, bool(body.get('review')), panel=True)
+		label = f'{"Sign up" if action == "signup" else "Log in"} · {site} · {pid}'
+		return snap(start_on(runner, req, label))  # the chat's session when it's free, else alongside it
+
 	@app.post('/api/accounts/signup')
 	async def signup(request: Request):
-		body = await request.json()
-		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
-		return start_signup(str(body.get('url') or ''), str(body.get('profile_id') or '') or None, values, review=bool(body.get('review')))
+		return await account_from_panel(request, 'signup')
+
+	@app.post('/api/accounts/login')
+	async def login(request: Request):
+		return await account_from_panel(request, 'login')
+
+	admin.register(app, env)
 
 	@app.get('/api/runs/{run}/{name}')
 	async def run_file(run: str, name: str):
@@ -328,7 +515,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 			await ws.close(code=1008)
 			return
 		await ws.accept()
-		await LiveSocket(ws, runner).serve()
+		await LiveSocket(ws, hub.get(ws.query_params.get('session')) or runner).serve()
 
 	if WEB_DIST.is_dir():
 		app.mount('/', StaticFiles(directory=WEB_DIST, html=True), name='web')

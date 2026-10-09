@@ -63,6 +63,24 @@ bot manager *punishes* noise is something only testing against real targets will
 
 ## Log
 
+### 2026-10-09: X (Twitter) "login/signup" lost after the person entered the email code (observed)
+
+**Run:** `~/.veil/runs/20261009-113145-a1d88f/` (14 steps, direct connection, the profile's own password, an
+account that already existed). Three things went wrong, none of them a block:
+
+1. **Routed as a sign-up.** The request said "login/signup", but chat routing only knew sign-ups, so the agent was
+   told to create an account for an email that already had one.
+2. **An SSO popup.** Step 2's click landed on "Sign up with Apple"; the agent then opened a second X tab with
+   `new_tab`, so three tabs were open when it reached X's six-digit email code.
+3. **Lost after the handback.** The person typed the code; X moved that tab to `mode=login` (the account existed).
+   The agent saw the page mid-render ("blank"), switched to the stale signup tabs, saw the email form again, and
+   reported the code step as not done.
+
+**Changes:** chat requests are planned (veil.planner) into sign-up / log-in / "auto" (log in if the account exists,
+else sign up, logging in if the site says the email is taken); account tasks forbid SSO buttons and new tabs; the
+handback note tells the agent to stay on the current tab and wait if it looks blank; the person can type the code
+in the handback note and the agent enters it.
+
 ### 2026-10-09: Accept-Language is reduced by Chromium; direct connections egress over IPv6 (observed)
 
 **Accept-Language.** Probed the header (httpbin.org/headers) against `navigator.languages` with several language

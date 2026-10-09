@@ -31,6 +31,7 @@ class Settings:
 	llm_api_key: str | None = None
 	llm_base_url: str | None = None
 	llm_temperature: float | None = None  # None = provider default (reasoning models reject custom values)
+	llm_effort: str | None = None  # reasoning effort (llm.EFFORTS[provider]); None = the provider's default
 
 	# Browser engine
 	engine: str = 'fortress'  # fortress | fortress-docker | cdp | chromium
@@ -48,8 +49,10 @@ class Settings:
 	# Orchestration
 	max_attempts: int = 3
 	max_steps: int = 40
+	max_parallel: int = 3  # browsers a split request may run at once (each is a full Fortress instance)
 	data_dir: Path = field(default_factory=lambda: Path.home() / '.veil')
 	profiles_file: Path | None = None  # your own sign-up details; default <data_dir>/accounts/profiles.csv
+	env_file: Path | None = None  # the .env these settings came from; the web UI writes keys and proxies back to it
 
 	@property
 	def accounts_dir(self) -> Path:
@@ -64,11 +67,13 @@ class Settings:
 		os.environ.setdefault('BROWSER_USE_CLOUD_SYNC', 'false')
 
 		s = cls()
+		s.env_file = Path(env_file).resolve() if env_file else None
 		s.llm_provider = _opt('VEIL_LLM_PROVIDER') or s.llm_provider
 		s.llm_model = _opt('VEIL_LLM_MODEL') or s.llm_model
 		s.llm_api_key = _opt('VEIL_LLM_API_KEY')
 		s.llm_base_url = _opt('VEIL_LLM_BASE_URL')
 		s.llm_temperature = _float('VEIL_LLM_TEMPERATURE')
+		s.llm_effort = _opt('VEIL_LLM_EFFORT')
 		s.engine = _opt('VEIL_ENGINE') or s.engine
 		s.fortress_channel = _opt('FORTRESS_CHANNEL') or s.fortress_channel
 		s.cdp_url = _opt('VEIL_CDP_URL')
@@ -78,9 +83,16 @@ class Settings:
 		s.proxy_file = Path(pf).expanduser() if pf else None
 		s.proxy_gateway = _opt('VEIL_PROXY_GATEWAY')
 		s.proxy_strategy = _opt('VEIL_PROXY_STRATEGY') or s.proxy_strategy
+		# VEIL_PROXY_MODE (set by the app's proxy panel) picks one source while keeping the others in .env.
+		mode = (_opt('VEIL_PROXY_MODE') or '').lower()
+		if mode == 'direct':
+			s.proxy_file = s.proxy_gateway = None
+		elif mode == 'list':
+			s.proxy_gateway = None
 		s.geo_match = _bool('VEIL_GEO_MATCH', s.geo_match)
 		s.max_attempts = int(_opt('VEIL_MAX_ATTEMPTS') or s.max_attempts)
 		s.max_steps = int(_opt('VEIL_MAX_STEPS') or s.max_steps)
+		s.max_parallel = max(1, int(_opt('VEIL_MAX_PARALLEL') or s.max_parallel))
 		dd = _opt('VEIL_DATA_DIR')
 		if dd:
 			s.data_dir = Path(dd).expanduser()

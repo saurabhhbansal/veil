@@ -68,8 +68,8 @@ def _cmd_accounts(args: argparse.Namespace, settings: Settings) -> int:
 	log = accounts.SignupLog(settings.accounts_dir / 'signups.csv')
 	if not log.rows:
 		print(f'no signups yet ({log.path})')
-	for s in sorted(log.rows.values(), key=lambda s: s.site):
-		print(f'{s.site:30} {s.status:18} {s.email:35} {s.updated:16} {s.note[:80]}')
+	for s in sorted(log.rows.values(), key=lambda s: (s.site, s.profile_id)):
+		print(f'{s.site:30} {s.profile_id:12} {s.status:18} {s.email:35} {s.updated:16} {s.note[:80]}')
 	return 0
 
 

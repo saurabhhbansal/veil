@@ -1,4 +1,8 @@
-"""One agent run at a time, driven from the web UI: state, an event log, pause/stop, steering and human takeover.
+"""Agent runs driven from the web UI: state, an event log, pause/stop, steering and human takeover.
+
+An AgentRunner is one session (one run at a time, in one browser). SessionHub holds them: the main chat's
+session, plus one per job when a request is split to run side by side (each in its own fresh browser, with a
+cap on how many browsers run at once; the rest wait as 'queued').
 
 Kept free of any UI framework so it can be tested: the chat app reads `snapshot()` (structured `events`).
 Nothing here pushes to a browser.
@@ -23,6 +27,7 @@ import json
 import logging
 import re
 import secrets
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -35,6 +40,8 @@ from veil import judge
 from veil.agent import Attempt, RunHooks, TaskResult, run_task
 from veil.config import Settings
 from veil.llm import build_llm
+from veil.proxy import NoProxy, ProxySource
+from veil.session import make_proxy_source
 
 log = logging.getLogger('veil.webui')
 
@@ -52,6 +59,9 @@ class RunRequest:
 	kind: str = 'task'  # task | signup
 	on_done: Callable[[TaskResult], None] | None = None  # called with the result once the agent has finished or stopped
 	review: bool = False  # judge the run afterwards and hand the review to the next run
+	gate: asyncio.Semaphore | None = None  # wait for a browser slot first (runs split from one request)
+	proxy_source: ProxySource | None = None  # shared by runs at the same time, so each takes its own proxy
+	group: str | None = None  # the split request this run belongs to
 
 
 def identity_info(n: int, total: int, session) -> dict[str, Any]:
@@ -143,6 +153,30 @@ def load_run(runs_dir: Path, run_id: str) -> dict[str, Any] | None:
 	return run
 
 
+def delete_run(runs_dir: Path, run_id: str) -> bool:
+	"""Remove a past run's folder (transcript, screenshots, recording)."""
+	if not RUN_ID.match(run_id) or not (runs_dir / run_id).is_dir():
+		return False
+	shutil.rmtree(runs_dir / run_id, ignore_errors=True)
+	return not (runs_dir / run_id).exists()
+
+
+def rename_run(runs_dir: Path, run_id: str, title: str) -> bool:
+	"""Give a past run a new title in the history (its transcript keeps what was asked)."""
+	if not RUN_ID.match(run_id):
+		return False
+	path = runs_dir / run_id / 'run.json'
+	run = _read_json(path)
+	if not isinstance(run, dict):
+		run = load_run(runs_dir, run_id)
+		if not run:
+			return False
+		run = {k: v for k, v in run.items() if k not in ('gif', 'result_file', 'judgement_file')}
+	run['title'] = title
+	_write_json(path, run)
+	return True
+
+
 def list_runs(runs_dir: Path, limit: int = 300) -> list[dict[str, Any]]:
 	"""Newest first, without the transcripts."""
 	if not runs_dir.is_dir():
@@ -155,6 +189,7 @@ def list_runs(runs_dir: Path, limit: int = 300) -> list[dict[str, Any]]:
 			out.append({
 				'id': run['id'], 'title': run.get('title', ''), 'kind': run.get('kind', 'task'), 'started': run.get('started'),
 				'state': run.get('state'), 'ok': run.get('ok'), 'has_gif': bool(run.get('gif')), 'verdict': j.get('verdict'),
+				'gif': run.get('gif'), 'group': run.get('group'),
 			})
 	return out
 
@@ -182,12 +217,13 @@ async def review_saved_run(runs_dir: Path, run_id: str, settings: Settings) -> d
 class AgentRunner:
 	"""Holds the current run. Methods are called from the server's handlers on the same event loop."""
 
-	def __init__(self, runs_dir: Path):
+	def __init__(self, runs_dir: Path, id: str = 'main', group: str | None = None, label: str = ''):
 		self.runs_dir = runs_dir
+		self.id, self.group, self.label = id, group, label  # label: the session's tab in the app
 		self.events: list[dict[str, Any]] = []
 		self.identity: dict[str, Any] | None = None
 		self.human: dict[str, Any] | None = None  # what the person is asked to do while status is 'needs_human'
-		self.status = 'idle'  # idle | starting | running | paused | needs_human | stopping | reviewing
+		self.status = 'idle'  # idle | queued | starting | running | paused | needs_human | stopping | reviewing
 		self.version = 0  # bumps whenever events/identity change, so the UI only re-sends on change
 		self.run_dir: Path | None = None
 		self.result: TaskResult | None = None
@@ -223,7 +259,7 @@ class AgentRunner:
 			return
 		ok = self.result.ok if self.result else None
 		data = {
-			'id': self.run_dir.name, 'title': self._req.title or self._req.task, 'task': self._req.task, 'kind': self._req.kind,
+			'id': self.run_dir.name, 'title': self._req.title or self._req.task, 'task': self._req.task, 'kind': self._req.kind, 'group': self._req.group,
 			'started': self.events[self._run_start]['time'] if len(self.events) > self._run_start else time.time(),
 			'ended': None if self._run_state == 'running' else time.time(), 'state': self._run_state, 'ok': ok,
 			'events': self.events[self._run_start:], 'identity': self.identity,
@@ -237,6 +273,9 @@ class AgentRunner:
 		"""Everything the chat app shows, as JSON-ready data."""
 		gif, res = self.gif_path, self.result_path
 		return {
+			'session': self.id,
+			'group': self.group,
+			'label': self.label,
 			'version': self.version,
 			'status': self.status,
 			'busy': self.busy,
@@ -260,7 +299,7 @@ class AgentRunner:
 		self.result, self._agent, self._session, self._stop_requested = None, None, None, False
 		self.human, self.identity, self._steers = None, None, []
 		self._req, self._run_start, self._run_state = req, len(self.events), 'running'
-		self.status = 'starting'
+		self.status = 'queued' if req.gate else 'starting'  # until it has a browser slot
 		self._event('task', text=req.title or req.task, kind=req.kind, run=self.run_dir.name)
 		if req.review and self.last_review:
 			# The previous run in this conversation was reviewed: the agent reads that review in its system prompt.
@@ -307,7 +346,10 @@ class AgentRunner:
 			h.get('source', ''), f'was asked for help: {h.get("reason")}'
 		)
 		msg = f'The human operator {what}, and has handed control back.' + (f' Their note: {note}' if note else '')
-		msg += ' The page may have changed: check the current browser state before your next action.'
+		msg += (
+			' Continue on the tab that is open now: they may have entered a code or moved the flow forward, so do not switch back to'
+			' earlier tabs. If the page looks blank or is still loading, wait 2-3 seconds and look again before deciding anything.'
+		)
 		state = self._agent.state
 		state.last_result = [*(state.last_result or []), ActionResult(long_term_memory=msg)]
 		self._resolve_human(note)
@@ -464,8 +506,15 @@ class AgentRunner:
 		kwargs = dict(req.agent_kwargs)
 		if self.run_dir:
 			kwargs.setdefault('generate_gif', str(self.run_dir / 'recording.gif'))
+		extra = {'proxy_source': req.proxy_source} if req.proxy_source is not None else {}
 		try:
-			self.result = await run_task(req.task, req.settings, identity_name=req.identity, max_steps=req.max_steps, hooks=hooks, agent_kwargs=kwargs)
+			if req.gate:
+				async with req.gate:  # a browser slot: Stop while queued cancels here
+					self.status = 'starting' if self.status == 'queued' else self.status
+					self.version += 1
+					self.result = await run_task(req.task, req.settings, identity_name=req.identity, max_steps=req.max_steps, hooks=hooks, agent_kwargs=kwargs, **extra)
+			else:
+				self.result = await run_task(req.task, req.settings, identity_name=req.identity, max_steps=req.max_steps, hooks=hooks, agent_kwargs=kwargs, **extra)
 			r = self.result
 			self._event(
 				'result', ok=r.ok, stopped=self._stop_requested, output=None if self._stop_requested else r.output,
@@ -509,3 +558,90 @@ class AgentRunner:
 	def result_path(self) -> str | None:
 		p = self.run_dir / 'result.json' if self.run_dir else None
 		return str(p) if p and p.exists() else None
+
+
+class SessionHub:
+	"""Every session the app has: 'main' (the chat) plus the ones a split request started.
+
+	Sessions of a split request share one browser gate (at most `max_parallel` browsers at once) and one
+	proxy source, so each takes a different proxy from a list (a gateway gives each its own sticky exit IP).
+	"""
+
+	def __init__(self, runs_dir: Path, main: AgentRunner | None = None, max_parallel: int = 3):
+		self.runs_dir = runs_dir
+		self.main = main or AgentRunner(runs_dir)
+		self.main.id = 'main'
+		self.sessions: dict[str, AgentRunner] = {'main': self.main}
+		self.max_parallel = max(1, max_parallel)
+		self.version = 0
+		self._gate: asyncio.Semaphore | None = None
+		self._sources: dict[tuple, ProxySource] = {}
+
+	def get(self, sid: str | None) -> AgentRunner | None:
+		return self.sessions.get(sid or 'main')
+
+	@property
+	def gate(self) -> asyncio.Semaphore:
+		if self._gate is None:
+			self._gate = asyncio.Semaphore(self.max_parallel)
+		return self._gate
+
+	def add(self, group: str, label: str) -> AgentRunner:
+		n = sum(1 for r in self.sessions.values() if r.group == group) + 1
+		runner = AgentRunner(self.runs_dir, id=f'{group}-{n}', group=group, label=label)
+		self.sessions[runner.id] = runner
+		self.version += 1
+		return runner
+
+	def close(self, sid: str) -> bool:
+		"""Drop a finished split-off session from the app (its run stays in the history)."""
+		r = self.sessions.get(sid)
+		if not r or r is self.main or r.busy:
+			return False
+		del self.sessions[sid]
+		self.version += 1
+		return True
+
+	def close_idle(self) -> None:
+		for sid in [sid for sid, r in self.sessions.items() if r is not self.main and not r.busy]:
+			self.close(sid)
+
+	def find_run(self, run_id: str) -> AgentRunner | None:
+		return next((r for r in self.sessions.values() if r.run_dir and r.run_dir.name == run_id), None)
+
+	def key(self) -> tuple:
+		"""Changes whenever any session's state does (for the event stream)."""
+		return self.version, tuple((r.id, r.version, r.status) for r in self.sessions.values())
+
+	def summaries(self) -> list[dict[str, Any]]:
+		out = []
+		for r in self.sessions.values():
+			task = next((e for e in reversed(r.events) if e['type'] == 'task'), None)
+			out.append({
+				'id': r.id, 'group': r.group, 'label': r.label or (task['text'].split('\n')[0][:80] if task else 'New chat'),
+				'status': r.status, 'busy': r.busy, 'run_id': r.run_dir.name if r.run_dir else None,
+				'ok': r.result.ok if r.result else None, 'needs_human': r.status == 'needs_human',
+			})
+		return out
+
+	def proxy_source(self, settings: Settings) -> ProxySource | None:
+		"""One source per proxy configuration, shared by every run; None when there's no proxy (direct)."""
+		if settings.proxy_gateway:
+			key: tuple = ('gateway', settings.proxy_gateway)
+		elif settings.proxy_file:
+			try:
+				mtime = settings.proxy_file.stat().st_mtime
+			except OSError:
+				return None  # the run reports the missing file itself
+			key = ('list', str(settings.proxy_file), mtime, settings.proxy_strategy)
+		else:
+			return None
+		if key not in self._sources:
+			try:
+				source = make_proxy_source(settings)
+			except (OSError, ValueError):
+				return None  # e.g. an empty list: the run reports it
+			if isinstance(source, NoProxy):
+				return None
+			self._sources = {key: source}  # an edited list replaces the old pool
+		return self._sources[key]

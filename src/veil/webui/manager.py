@@ -44,6 +44,7 @@ def settings_from_ui(values: dict[str, Any], base: Settings) -> tuple[Settings, 
 		# falls back to that provider's own variable (GROQ_API_KEY, ANTHROPIC_API_KEY, ...).
 		s.llm_api_key = None
 	s.llm_base_url = prefilled('agent_settings.llm_base_url', s.llm_base_url)
+	s.llm_effort = prefilled('agent_settings.llm_effort', s.llm_effort)
 	temp = v('agent_settings.llm_temperature')
 	s.llm_temperature = None if _blank(temp) else float(temp)
 

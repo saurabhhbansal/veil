@@ -1,6 +1,6 @@
 // Shapes of the local veil server's API (src/veil/webui/runner.py snapshot() and server.py /api/config).
 
-export type RunStatus = "idle" | "starting" | "running" | "paused" | "needs_human" | "stopping" | "reviewing";
+export type RunStatus = "idle" | "queued" | "starting" | "running" | "paused" | "needs_human" | "stopping" | "reviewing";
 
 export interface ExitInfo {
   ip: string;
@@ -53,7 +53,7 @@ interface BaseEvent {
 
 export type RunEvent = BaseEvent &
   (
-    | { type: "task"; text: string; run: string; kind?: "task" | "signup" }
+    | { type: "task"; text: string; run: string; kind?: "task" | "signup" | "login" }
     | { type: "attempt"; identity: Identity }
     | {
         type: "step";
@@ -100,6 +100,8 @@ export interface RunSummary {
   ok: boolean | null;
   has_gif: boolean;
   verdict: Judgement["verdict"] | null;
+  gif: string | null;
+  group: string | null;
 }
 
 export interface RunDetail {
@@ -129,7 +131,24 @@ export interface HumanRequest {
   since: number;
 }
 
+/** One session in the app: the chat ("main") or a job split off a request, running side by side. */
+export interface SessionSummary {
+  id: string;
+  group: string | null;
+  label: string;
+  status: RunStatus;
+  busy: boolean;
+  run_id: string | null;
+  ok: boolean | null;
+  needs_human: boolean;
+}
+
 export interface Snapshot {
+  session: string;
+  group: string | null;
+  label: string;
+  sessions: SessionSummary[];
+  skipped?: string[]; // jobs of a split request that couldn't start, and why
   version: number;
   status: RunStatus;
   busy: boolean;
@@ -146,8 +165,13 @@ export interface Snapshot {
 export interface VeilConfig {
   llm_provider: string;
   llm_model: string;
+  llm_effort: string | null;
   has_api_key: boolean;
+  keys: Record<string, boolean>; // provider -> a key is set (never the key itself)
   providers: string[];
+  efforts: Record<string, string[]>; // provider -> effort levels, lowest first
+  models: Record<string, string[]>; // provider -> suggested model names
+  max_parallel: number;
   engine: string;
   engines: string[];
   headless: boolean;
@@ -201,6 +225,7 @@ export interface ConversationTurn {
 export interface AccountProfile {
   id: string;
   email: string;
+  username?: string;
   first_name?: string;
   last_name?: string;
   dob?: string;
@@ -243,3 +268,51 @@ export type ProfileDraft = Omit<AccountProfile, "has_password"> & {
   has_password?: boolean;
   key: string;
 };
+
+// ── Settings saved to .env (GET /api/keys, /api/proxies): secrets go in, only masked values come out ──
+
+export interface KeyInfo {
+  var: string;
+  set: boolean;
+  masked: string | null;
+  source: string | null;
+  in_file: boolean;
+}
+
+export interface KeysState {
+  env_file: string;
+  keys: Record<string, KeyInfo>;
+}
+
+export interface ProxyTest {
+  ok: boolean;
+  ip?: string;
+  country?: string;
+  city?: string | null;
+  timezone?: string;
+  error?: string;
+  ms: number;
+  at: number;
+}
+
+export interface ProxyItem {
+  id: string;
+  server: string; // credentials redacted
+  scheme: string;
+  host: string;
+  port: number;
+  auth: boolean;
+  status: ProxyTest | null;
+}
+
+export interface ProxiesState {
+  mode: "direct" | "list" | "gateway";
+  file: string;
+  strategy: string;
+  strategies: string[];
+  gateway: { server: string | null; sticky: boolean; error?: string; status: ProxyTest | null } | null;
+  proxies: ProxyItem[];
+  errors: string[];
+  note: string | null;
+  env_file: string;
+}

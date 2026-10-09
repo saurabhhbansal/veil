@@ -20,7 +20,7 @@ function modifiers(e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shi
   return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 }
 
-function useLiveSocket(onFrame: (data: string) => void) {
+function useLiveSocket(onFrame: (data: string) => void, session: string) {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const [info, setInfo] = useState({ live: false, url: "", title: "" });
@@ -29,7 +29,7 @@ function useLiveSocket(onFrame: (data: string) => void) {
     let closed = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
     const open = () => {
-      const ws = new WebSocket(liveSocketUrl());
+      const ws = new WebSocket(liveSocketUrl(session));
       wsRef.current = ws;
       ws.onopen = () => setConnected(true);
       ws.onmessage = (m) => {
@@ -53,9 +53,10 @@ function useLiveSocket(onFrame: (data: string) => void) {
       closed = true;
       if (retry) clearTimeout(retry);
       wsRef.current?.close();
+      setInfo({ live: false, url: "", title: "" });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [session]);
 
   const send = useCallback((ev: Outgoing) => {
     const ws = wsRef.current;
@@ -66,7 +67,7 @@ function useLiveSocket(onFrame: (data: string) => void) {
 }
 
 export function BrowserPanel() {
-  const { snap, takeOver, handBack, pauseResume, stop } = useRun();
+  const { snap, sessionId, takeOver, handBack, pauseResume, stop } = useRun();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [hasFrame, setHasFrame] = useState(false);
@@ -113,7 +114,7 @@ export function BrowserPanel() {
     [draw],
   );
 
-  const { connected, info, send } = useLiveSocket(onFrame);
+  const { connected, info, send } = useLiveSocket(onFrame, sessionId);
   const live = info.live && snap.browser_open;
   const interactive = live && hasFrame;
   const url = info.url || lastStepUrl(snap.events);
@@ -121,6 +122,8 @@ export function BrowserPanel() {
   useEffect(() => {
     if (!live) setHasFrame(false);
   }, [live]);
+
+  useEffect(() => setHasFrame(false), [sessionId]); // another session's browser: wait for its first frame
 
   // ── input ────────────────────────────────────────────────────────────────
 
@@ -214,7 +217,9 @@ export function BrowserPanel() {
   const agentDriving = st === "running";
   const placeholder = !connected
     ? "Connecting to veil…"
-    : st === "starting"
+    : st === "queued"
+      ? "Waiting for a free browser: this session starts when another one finishes."
+      : st === "starting"
       ? "Launching a fresh identity: proxy → geo → device → Fortress…"
       : snap.busy
         ? "Waiting for the browser…"

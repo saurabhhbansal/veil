@@ -40,11 +40,16 @@ src/veil/
   agent.py      run_task: Agent + on_step_end block guard; rotates identity and retries on a block
   check.py      `veil check`: compares the page-visible fingerprint with the persona
   accounts.py   `veil signup` / `veil accounts`: the user's own profiles.csv -> domain-scoped sensitive_data placeholders;
-                signups.csv logs site/profile/status, one account per site, each on its own sticky identity
+                signups.csv logs site/profile/status, one account per (site, profile), each on its own sticky identity;
+                build_login_task / plan_login log in with the row's password (or the profile's, for accounts made outside veil)
+  planner.py    chat message -> None (ordinary task) or Jobs (signup | login | auto | task); several jobs run side by side
+  envfile.py    the app writes API keys, model defaults and proxy settings back to .env (and os.environ)
   cli.py        run | ui | check | persona | proxies | identities
   webui/        `veil ui`: server.py = FastAPI API + the chat app (web/out); live.py = interactive live view (2nd CDP
                 connection: screencast out, Input.* in); runner.py = UI-agnostic run state, events, take_over/hand_back
-                (RunHooks into agent.run_task); manager.py = UI values -> Settings. The Gradio panel was removed 2026-10-09.
+                (RunHooks into agent.run_task) and SessionHub (sessions: 'main' + one per split-off job, a browser gate of
+                VEIL_MAX_PARALLEL, one shared proxy source); admin.py = /api/keys, /api/llm/default, /api/proxies*;
+                manager.py = UI values -> Settings. The Gradio panel was removed 2026-10-09.
 web/            Next.js static export adapted from browser-use/chat-ui-example (MIT); Browser Use Cloud SDK removed,
                 talks only to the local API. `npm run build` -> web/out, served by `veil ui`.
 ```
@@ -53,8 +58,13 @@ Human takeover: RunHooks.request_human pauses the agent (status needs_human). _B
 CAPTCHAs (detection.find_captcha) and unsolved challenges to the person once per page before rotating; the agent
 also has a `request_human_help` action. hand_back() injects an ActionResult note into agent.state.last_result.
 Not Browser Use Cloud: veil never uses hosted browser services (user decision, 2026-10-09).
-Accounts in the app: /api/accounts* (server.py) over accounts.py; sign-ups run through AgentRunner (RunRequest.title/kind/
-on_done records the status). Passwords leave the server only via /api/accounts/reveal.
+Accounts in the app: /api/accounts* (server.py) over accounts.py; sign-ups and logins run through AgentRunner (RunRequest.title/
+kind/on_done records the status). Passwords leave the server only via /api/accounts/reveal; API keys and proxy credentials never.
+Sessions: endpoints take `session` (body or ?session=), default 'main'. A request the planner splits runs each job in its own
+session/browser/identity (queued past VEIL_MAX_PARALLEL); the app shows them as tabs. Each run in the sidebar has a ⋯ menu
+(open, rename, download recording, delete: /api/runs/<id>/rename|delete).
+LLM effort: Settings.llm_effort (VEIL_LLM_EFFORT, llm.EFFORTS per provider): OpenAI reasoning_effort, Anthropic adaptive thinking +
+output_config.effort, Google thinking_level. Proxies: VEIL_PROXY_MODE (direct | list | gateway) picks the source and keeps the others in .env.
 Runs: runner.py writes <runs_dir>/<id>/run.json on every event (list_runs/load_run read it; older runs fall back to
 result.json). Steers: RunHooks.on_step_start injects them into agent.state.last_result; ones that arrive as the agent
 finishes go through RunHooks.take_followups -> agent.add_new_task + another agent.run in the same browser.

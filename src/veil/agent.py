@@ -13,6 +13,7 @@ from browser_use import ActionResult, Agent, Tools
 from veil.config import Settings
 from veil.detection import BlockSignal, classify, find_captcha
 from veil.llm import build_llm
+from veil.proxy import ProxySource
 from veil.session import Identity, StealthSession, make_proxy_source
 
 log = logging.getLogger('veil.agent')
@@ -150,10 +151,12 @@ async def run_task(
 	*,
 	hooks: RunHooks | None = None,
 	agent_kwargs: dict[str, Any] | None = None,
+	proxy_source: ProxySource | None = None,
 ) -> TaskResult:
+	"""proxy_source: share one between runs that go at the same time, so each takes a different proxy."""
 	hooks = hooks or RunHooks()
 	llm = build_llm(settings)
-	proxy_source = make_proxy_source(settings)  # shared across attempts so cooldowns carry over
+	proxy_source = proxy_source or make_proxy_source(settings)  # shared across attempts so cooldowns carry over
 	identity = Identity.load_or_create(settings, identity_name) if identity_name else None
 	# A named identity is supposed to stay the same person; rotating it on a block would defeat that.
 	attempts_allowed = 1 if identity else settings.max_attempts

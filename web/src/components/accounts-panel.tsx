@@ -5,7 +5,7 @@
 // is set, and a sign-up's password is fetched on request ("Show password").
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  Check, ChevronDown, Copy, Eye, KeyRound, Loader2, Plus, RotateCw, Save, Trash2, UserPlus, X,
+  Check, ChevronDown, Copy, Eye, KeyRound, Loader2, LogIn, Plus, RotateCw, Save, Trash2, UserPlus, X,
 } from "lucide-react";
 import { useRun } from "@/context/run-context";
 import { api } from "@/lib/api";
@@ -14,6 +14,7 @@ import type { AccountsState, ProfileDraft, SignupRow } from "@/lib/types";
 const FIELDS: { key: keyof ProfileDraft; label: string; type?: string; placeholder?: string; wide?: boolean }[] = [
   { key: "id", label: "Profile id", placeholder: "e.g. asha" },
   { key: "email", label: "Email", type: "email", placeholder: "you@example.com" },
+  { key: "username", label: "Username", placeholder: "if a site asks for one" },
   { key: "first_name", label: "First name" },
   { key: "last_name", label: "Last name" },
   { key: "dob", label: "Date of birth", type: "date" },
@@ -28,6 +29,7 @@ const FIELDS: { key: keyof ProfileDraft; label: string; type?: string; placehold
 
 const STATUS_STYLE: Record<string, string> = {
   signed_up: "bg-green-500/15 text-green-400",
+  logged_in: "bg-green-500/15 text-green-400",
   verify_email: "bg-blue-500/15 text-blue-400",
   already_registered: "bg-zinc-500/20 text-zinc-300",
   needs_human: "bg-amber-500/15 text-amber-400",
@@ -130,14 +132,14 @@ function ProfileCard({
   );
 }
 
-function SignupItem({ row, isDone, onRetry, busy }: { row: SignupRow; isDone: boolean; onRetry: () => void; busy: boolean }) {
+function SignupItem({ row, isDone, onRetry, onLogin, busy }: { row: SignupRow; isDone: boolean; onRetry: () => void; onLogin: () => void; busy: boolean }) {
   const [secret, setSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function show() {
     try {
-      setSecret((await api.reveal(row.site)).password);
+      setSecret((await api.reveal(row.site, row.profile_id)).password);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -180,6 +182,16 @@ function SignupItem({ row, isDone, onRetry, busy }: { row: SignupRow; isDone: bo
               </button>
             </span>
           ))}
+        {isDone && (
+          <button
+            onClick={onLogin}
+            disabled={busy}
+            className="inline-flex items-center gap-1 text-[12px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+            title="Log in as this account, on its own device and IP"
+          >
+            <LogIn className="w-3.5 h-3.5" /> Log in
+          </button>
+        )}
         {!isDone && (
           <button
             onClick={onRetry}
@@ -197,7 +209,7 @@ function SignupItem({ row, isDone, onRetry, busy }: { row: SignupRow; isDone: bo
 }
 
 export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { snap, startSignup } = useRun();
+  const { snap, startAccount } = useRun();
   const [tab, setTab] = useState<"profiles" | "signups">("profiles");
   const [state, setState] = useState<AccountsState | null>(null);
   const [drafts, setDrafts] = useState<ProfileDraft[]>([]);
@@ -207,6 +219,7 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [message, setMessage] = useState<{ kind: "error" | "ok"; text: string } | null>(null);
   const [url, setUrl] = useState("");
   const [profileId, setProfileId] = useState("");
+  const [action, setAction] = useState<"signup" | "login">("signup");
   const [starting, setStarting] = useState(false);
 
   const load = useCallback(async (keepDrafts: boolean) => {
@@ -228,11 +241,12 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, load]);
 
-  // A sign-up run just ended: its status is in the log now.
+  // An account run just ended (in any session): its status is in the log now.
+  const running = snap.sessions.filter((x) => x.busy).length;
   useEffect(() => {
-    if (open && !snap.busy) void load(true);
+    if (open) void load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snap.busy]);
+  }, [running]);
 
   useEffect(() => {
     if (!open) return;
@@ -266,10 +280,10 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
     }
   }
 
-  async function signup(target: string, pid: string) {
+  async function signup(target: string, pid: string, what: "signup" | "login" = "signup") {
     setStarting(true);
     setMessage(null);
-    const ok = await startSignup(target, pid);
+    const ok = await startAccount(what, target, pid);
     setStarting(false);
     if (ok) {
       setUrl("");
@@ -356,14 +370,28 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
                 className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 space-y-2.5"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (url.trim()) void signup(url.trim(), profileId);
+                  if (url.trim()) void signup(url.trim(), profileId, action);
                 }}
               >
-                <p className="text-[13px] text-zinc-200 font-medium">New sign-up</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-[13px] text-zinc-200 font-medium">{action === "signup" ? "New sign-up" : "Log in"}</p>
+                  <div className="ml-auto flex items-center bg-zinc-900 rounded-lg p-0.5">
+                    {(["signup", "login"] as const).map((a) => (
+                      <button
+                        key={a}
+                        type="button"
+                        onClick={() => setAction(a)}
+                        className={`px-2 py-0.5 rounded-md text-[11px] ${action === a ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"}`}
+                      >
+                        {a === "signup" ? "Sign up" : "Log in"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Site, e.g. example.com/register" className={inputCls} />
                 <div className="flex gap-2">
                   <select value={profileId} onChange={(e) => setProfileId(e.target.value)} className={`${inputCls} [color-scheme:dark]`}>
-                    <option value="">Random profile</option>
+                    <option value="">{action === "signup" ? "Random profile" : "The account veil knows"}</option>
                     {savedIds.map((id) => (
                       <option key={id} value={id}>
                         {id}
@@ -372,18 +400,25 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
                   </select>
                   <button
                     type="submit"
-                    disabled={!url.trim() || snap.busy || starting || savedIds.length === 0}
+                    disabled={!url.trim() || starting || savedIds.length === 0}
                     className="shrink-0 inline-flex items-center gap-1.5 rounded-md bg-zinc-100 hover:bg-white text-zinc-900 text-[13px] font-medium px-3 disabled:opacity-40"
                   >
-                    {starting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />} Sign up
+                    {starting ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : action === "signup" ? (
+                      <UserPlus className="w-3.5 h-3.5" />
+                    ) : (
+                      <LogIn className="w-3.5 h-3.5" />
+                    )}{" "}
+                    {action === "signup" ? "Sign up" : "Log in"}
                   </button>
                 </div>
                 <p className="text-[11px] text-zinc-500">
                   {savedIds.length === 0
                     ? "Add and save a profile first."
-                    : snap.busy
-                      ? "A task is running: stop it first."
-                      : "One account per site, each on its own sticky identity. CAPTCHAs and codes come to you in the browser panel."}
+                    : action === "signup"
+                      ? "One account per profile per site, each on its own sticky device and IP. CAPTCHAs and codes come to you in the browser panel. If a task is running, this runs alongside it."
+                      : "Uses the password veil saved for that site, or the profile's own password for an account you made yourself."}
                 </p>
               </form>
               {state.signups.length === 0 ? (
@@ -391,11 +426,12 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
               ) : (
                 state.signups.map((row) => (
                   <SignupItem
-                    key={row.site}
+                    key={`${row.site}|${row.profile_id}`}
                     row={row}
                     isDone={state.done_statuses.includes(row.status)}
-                    busy={snap.busy || starting}
+                    busy={starting}
                     onRetry={() => void signup(row.site, row.profile_id)}
+                    onLogin={() => void signup(row.site, row.profile_id, "login")}
                   />
                 ))
               )}

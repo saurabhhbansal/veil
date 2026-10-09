@@ -13,6 +13,7 @@ import { StepSection } from "./step-section";
 import { ThinkingIndicator } from "./thinking-indicator";
 
 const WAITING: Partial<Record<RunStatus, string>> = {
+  queued: "Waiting for a free browser (sessions run a few at a time)…",
   starting: "Launching identity: proxy → geo → device → Fortress…",
   running: "Thinking…",
   stopping: "Stopping after the current step…",

@@ -2,7 +2,8 @@
 
 // Adapted from chat-ui-example's settings-context: instead of Browser Use Cloud models, profiles,
 // workspaces and proxy countries, these are veil's own run settings. Defaults come from the server's
-// .env (GET /api/config); a choice made here is remembered in localStorage. API keys never pass through here.
+// .env (GET /api/config); a choice made here is remembered in localStorage. API keys never pass through here
+// (they're saved to .env from the model menu, straight to the server).
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import type { VeilConfig } from "@/lib/types";
@@ -10,9 +11,9 @@ import type { VeilConfig } from "@/lib/types";
 export interface VeilSettings {
   provider: string;
   model: string;
+  effort: string; // "" = the provider's default
   identity: string; // "" = a fresh device and exit IP every run
   engine: string;
-  headful: boolean;
   geoMatch: boolean;
   maxAttempts: number;
   maxSteps: number;
@@ -27,6 +28,7 @@ interface SettingsContextType {
   update: (patch: Partial<VeilSettings>) => void;
   reset: () => void;
   uiValues: () => Record<string, unknown>;
+  refreshConfig: () => Promise<void>;
 }
 
 const STORAGE_KEY = "veil-settings";
@@ -36,15 +38,20 @@ function fromConfig(c: VeilConfig): VeilSettings {
   return {
     provider: c.llm_provider,
     model: c.llm_model,
+    effort: c.llm_effort ?? "",
     identity: "",
     engine: c.engine,
-    headful: !c.headless,
     geoMatch: c.geo_match,
     maxAttempts: c.max_attempts,
     maxSteps: c.max_steps,
     useVision: true,
     review: false,
   };
+}
+
+/** A remembered effort the current provider doesn't have falls back to its default. */
+function withValidEffort(s: VeilSettings, c: VeilConfig): VeilSettings {
+  return s.effort && !(c.efforts[s.provider] ?? []).includes(s.effort) ? { ...s, effort: "" } : s;
 }
 
 function load(): Partial<VeilSettings> {
@@ -83,7 +90,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const settings = config ? { ...fromConfig(config), ...overrides } : null;
+  const settings = config ? withValidEffort({ ...fromConfig(config), ...overrides }, config) : null;
 
   const update = useCallback((patch: Partial<VeilSettings>) => {
     setOverrides((prev) => {
@@ -95,6 +102,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       }
       return next;
     });
+  }, []);
+
+  const refreshConfig = useCallback(async () => {
+    try {
+      setConfig(await api.config());
+    } catch {
+      /* keep the last one */
+    }
   }, []);
 
   const reset = useCallback(() => {
@@ -112,10 +127,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     return {
       "agent_settings.llm_provider": settings.provider,
       "agent_settings.llm_model": settings.model,
+      "agent_settings.llm_effort": settings.effort,
       "agent_settings.max_steps": settings.maxSteps,
       "agent_settings.use_vision": settings.useVision,
       "stealth_settings.engine": settings.engine,
-      "stealth_settings.headful": settings.headful,
       "stealth_settings.identity": settings.identity,
       "stealth_settings.max_attempts": settings.maxAttempts,
       "stealth_settings.geo_match": settings.geoMatch,
@@ -123,7 +138,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [settings]);
 
   return (
-    <SettingsContext.Provider value={{ config, configError, settings, update, reset, uiValues }}>
+    <SettingsContext.Provider value={{ config, configError, settings, update, reset, uiValues, refreshConfig }}>
       {children}
     </SettingsContext.Provider>
   );

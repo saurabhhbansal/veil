@@ -48,7 +48,7 @@ def test_new_password_meets_common_rules():
 		assert any(c in '!@#$%*?' for c in pw)
 
 
-def test_one_account_per_site(tmp_path):
+def test_one_account_per_profile_per_site(tmp_path):
 	profiles = _profiles(tmp_path)
 	log = A.SignupLog(tmp_path / 'signups.csv')
 	profile, signup, exists = A.plan_signup(profiles, log, 'example.com', 'p1')
@@ -63,11 +63,58 @@ def test_one_account_per_site(tmp_path):
 	signup.status = 'signed_up'
 	log.record(signup)
 	log = A.SignupLog(log.path)
-	assert A.plan_signup(profiles, log, 'example.com')[2] is True
-	with pytest.raises(ValueError, match='not creating a second'):
-		A.plan_signup(profiles, log, 'example.com', 'p2')
-	# Other sites are independent.
-	assert not A.plan_signup(profiles, log, 'other.org', 'p2')[2]
+	assert A.plan_signup(profiles, log, 'example.com')[2] is True  # no profile named: the site's account
+	assert A.plan_signup(profiles, log, 'example.com', 'p1')[2] is True  # never a second account for p1
+	# Another profile may have its own account there, on its own identity.
+	_, other, exists = A.plan_signup(profiles, log, 'example.com', 'p2')
+	assert not exists and other.identity == 'acct-example.com-p2'
+	# Unnamed jobs of one request get different profiles.
+	assert A.plan_signup(profiles, A.SignupLog(tmp_path / 'fresh.csv'), 'other.org', exclude={'p1'})[0]['id'] == 'p2'
+	with pytest.raises(ValueError, match='every profile'):
+		A.plan_signup(profiles, A.SignupLog(tmp_path / 'fresh.csv'), 'other.org', exclude={'p1', 'p2'})
+
+
+def test_parallel_runs_dont_lose_each_others_rows(tmp_path):
+	path = tmp_path / 'signups.csv'
+	first, second = A.SignupLog(path), A.SignupLog(path)  # both read before either wrote
+	first.record(A.Signup('x.com', 'p1', 'a@a.com', 'pw1', 'signed_up'))
+	second.record(A.Signup('x.com', 'p2', 'b@b.com', 'pw2', 'failed'))
+	rows = A.SignupLog(path)
+	assert {r.profile_id for r in rows.for_site('x.com')} == {'p1', 'p2'}
+	assert rows.get('x.com').profile_id == 'p1' and rows.get('x.com', 'p2').password == 'pw2'  # the account first
+
+
+def test_login_uses_the_signup_row_or_the_profile_password(tmp_path):
+	path = tmp_path / 'p.csv'
+	path.write_text('id,email,username,password\np1,a@a.com,asha_r,Own1!\np2,b@b.com,,\n')
+	profiles = A.load_profiles(path)
+	log = A.SignupLog(tmp_path / 's.csv')
+	# an account made outside veil: the profile's own password, on that profile's identity for the site
+	profile, row, logged = A.plan_login(profiles, log, 'x.com', 'p1')
+	assert (row.password, row.identity, logged) == ('Own1!', 'acct-x.com-p1', False)
+	assert A.placeholders(profile, row.password)['x_username'] == 'asha_r'
+	with pytest.raises(ValueError, match='no password saved'):
+		A.plan_login(profiles, log, 'x.com', 'p2')
+	with pytest.raises(ValueError, match='say which profile'):
+		A.plan_login(profiles, log, 'x.com')
+	assert A.finish_login(row, 'LOGIN_STATUS: wrong_credentials - nope', logged=False) is None  # nothing recorded
+	rec = A.finish_login(row, 'Home feed.\nLOGIN_STATUS: logged_in - saw the feed', logged=False)
+	log.record(rec)
+	# next time: the recorded row, found without naming the profile
+	_, again, logged = A.plan_login(profiles, A.SignupLog(log.path), 'x.com')
+	assert again.status == 'logged_in' and logged and again.password == 'Own1!'
+	kept = A.finish_login(again, 'LOGIN_STATUS: needs_human - SMS code', logged=True)
+	assert kept.status == 'logged_in' and kept.note.startswith('login needs human')  # a failed login keeps the account's status
+
+
+def test_account_tasks_stay_on_the_form_and_can_log_in_instead():
+	task = A.build_task('https://x.test', {'x_email': 'e'}, ask_human=True, if_registered='login')
+	assert 'single sign-on' in task and 'one tab' in task and 'log in to that account instead' in task
+	assert 'stop; do not try' in A.build_task('https://x.test', {'x_email': 'e'})
+	login = A.build_login_task('https://x.test/login', {'x_email': 'e', 'x_password': 'p'}, ask_human=True, request='log in and like my post')
+	assert 'LOGIN_STATUS: logged_in' in login and 'like my post' in login and 'request_human_help' in login
+	assert A.parse_status('LOGIN_STATUS: logged_in - feed', A.LOGIN_STATUSES) == ('logged_in', 'feed')
+	assert A.parse_status('LOGIN_STATUS: wrong_credentials - x')[0] == 'failed'  # not a sign-up status
 
 
 def test_profile_password_column_wins(tmp_path):
@@ -104,42 +151,6 @@ def test_save_profiles_validates_and_round_trips(tmp_path):
 def test_watched_signups_ask_the_person_instead_of_stopping():
 	assert 'request_human_help' in A.build_task('https://a.test', {'x_email': 'e'}, ask_human=True)
 	assert 'request_human_help' not in A.build_task('https://a.test', {'x_email': 'e'})
-
-
-class _FakeLLM:
-	"""Answers the sign-up intent call with a fixed verdict, and remembers what it was shown."""
-
-	def __init__(self, **verdict):
-		self.verdict, self.seen = verdict, None
-
-	async def ainvoke(self, messages, output_format):
-		self.seen = ' '.join(m.content for m in messages)
-		from types import SimpleNamespace
-
-		return SimpleNamespace(completion=output_format(**self.verdict))
-
-
-PROFILES = [{'id': 'asha', 'email': 'asha@a.com', 'phone': '+91 99999 00000'}, {'id': 'work', 'email': 'asha@work.com'}]
-
-
-@pytest.mark.asyncio
-async def test_chat_signup_intent_names_the_site_and_profile():
-	llm = _FakeLLM(is_signup=True, url='https://www.linkedin.com/signup', profile_id='work')
-	intent = await A.detect_signup('Go sign up on LinkedIn with my work email', PROFILES, llm)
-	assert intent == A.SignupIntent('https://www.linkedin.com/signup', 'work')
-	assert 'asha@work.com' in llm.seen and '+91' not in llm.seen  # only ids and emails go to the intent call
-	# a profile named outright wins over the model's guess
-	intent = await A.detect_signup('register on example.com as asha', PROFILES, _FakeLLM(is_signup=True, url='', profile_id='work'))
-	assert intent == A.SignupIntent('https://example.com', 'asha')
-
-
-@pytest.mark.asyncio
-async def test_chat_signup_intent_skips_other_tasks_and_degrades_without_the_llm():
-	never = _FakeLLM(is_signup=True, url='x', profile_id='')
-	assert await A.detect_signup('find the cheapest 1TB SSD on amazon.in', PROFILES, never) is None and never.seen is None
-	assert await A.detect_signup('register for the webinar on zoom.us', PROFILES, _FakeLLM(is_signup=False, url='', profile_id='')) is None
-	assert await A.detect_signup('sign up on news.ycombinator.com', PROFILES, None) == A.SignupIntent('https://news.ycombinator.com', None)
-	assert await A.detect_signup('sign up on LinkedIn', PROFILES, None) is None  # no LLM, no written domain: a normal task
 
 
 def test_domain_in_ignores_email_addresses():

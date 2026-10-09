@@ -192,3 +192,49 @@ class GatewayProxy:
 
 	def report(self, proxy: Proxy | None, *, ok: bool, blocked: bool = False) -> None:
 		pass  # a fresh session token next time already means a fresh exit IP
+
+
+# --- the proxy list file, as the web UI edits it -------------------------------------------------
+
+
+def proxy_id(proxy: Proxy) -> str:
+	"""Stable id for a proxy that doesn't reveal its credentials."""
+	import hashlib
+
+	return hashlib.sha1(proxy.url.encode()).hexdigest()[:12]
+
+
+def read_list(path: Path) -> list[Proxy]:
+	"""The proxies in a list file; lines that don't parse are skipped (the UI shows only what veil can use)."""
+	if not path.exists():
+		return []
+	out: list[Proxy] = []
+	for line in path.read_text(encoding='utf-8').splitlines():
+		if line.strip() and not line.lstrip().startswith('#'):
+			try:
+				out.append(Proxy.parse(line))
+			except ValueError:
+				continue
+	return out
+
+
+def write_list(path: Path, proxies: list[Proxy]) -> None:
+	"""Rewrite the list file (one proxy URL per line), replacing it in one step."""
+	path.parent.mkdir(parents=True, exist_ok=True)
+	tmp = path.with_suffix('.tmp')
+	body = '# veil proxy list: one per line (scheme://user:pass@host:port). Edited from the veil app.\n'
+	tmp.write_text(body + ''.join(p.url + '\n' for p in proxies), encoding='utf-8')
+	tmp.replace(path)
+
+
+def parse_many(text: str) -> tuple[list[Proxy], list[str]]:
+	"""Pasted lines -> (proxies, one error per bad line). Blank lines and # comments are ignored."""
+	ok, errors = [], []
+	for n, line in enumerate((text or '').splitlines(), 1):
+		if not line.strip() or line.lstrip().startswith('#'):
+			continue
+		try:
+			ok.append(Proxy.parse(line))
+		except ValueError as e:
+			errors.append(f'line {n}: {e}')
+	return ok, errors

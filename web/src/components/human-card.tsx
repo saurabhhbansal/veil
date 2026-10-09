@@ -21,7 +21,9 @@ export function HumanPrompt({ human, onContinue, compact }: { human: HumanReques
         <div className="text-[13px] leading-snug">
           <p className="text-amber-200 font-medium">{isUser ? "You're in control" : `Human needed: ${human.reason}`}</p>
           <p className="text-amber-200/70">
-            {SOURCE_TEXT[human.source]} {isUser ? "Click and type in the browser view." : "Solve it in the browser view, then continue."}
+            {SOURCE_TEXT[human.source]} {isUser
+              ? "Click and type in the browser view."
+              : "Do it in the browser view, or type the code here and the agent enters it. Then continue."}
           </p>
         </div>
       </div>
@@ -33,17 +35,15 @@ export function HumanPrompt({ human, onContinue, compact }: { human: HumanReques
           setNote("");
         }}
       >
-        {!compact && (
-          <input
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Note for the agent (optional)"
-            className="flex-1 min-w-0 bg-zinc-900/80 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-[13px] text-zinc-200 outline-none focus:border-zinc-500 placeholder-zinc-500"
-          />
-        )}
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder={compact ? "Code or note (optional)" : "Note for the agent, or the code to type (optional)"}
+          className="flex-1 min-w-0 bg-zinc-900/80 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-[13px] text-zinc-200 outline-none focus:border-zinc-500 placeholder-zinc-500"
+        />
         <button
           type="submit"
-          className={`${compact ? "w-full justify-center" : ""} inline-flex items-center gap-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-[13px] font-semibold px-3 py-1.5 transition-colors`}
+          className={`shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-[13px] font-semibold px-3 py-1.5 transition-colors`}
         >
           <Play className="w-3.5 h-3.5" fill="currentColor" />
           {isUser ? "Hand back to agent" : "Done, continue"}
