@@ -12,6 +12,8 @@ from veil.proxy import GatewayProxy, Proxy, ProxyPool
 		('u:p@host:1', Proxy('http', 'host', 1, 'u', 'p')),
 		('socks5://10.0.0.1:1080', Proxy('socks5', '10.0.0.1', 1080)),
 		('http://user%40mail:p%3Ass@h:9', Proxy('http', 'h', 9, 'user@mail', 'p:ss')),
+		('gw.example.com:823:user:pa:ss', Proxy('http', 'gw.example.com', 823, 'user', 'pa:ss')),
+		('http://[2001:db8::1]:8080', Proxy('http', '2001:db8::1', 8080)),
 	],
 )
 def test_parse(raw, expected):
@@ -76,3 +78,9 @@ def test_pool_from_file_skips_comments(tmp_path):
 	f = tmp_path / 'proxies.txt'
 	f.write_text('# residential\n1.1.1.1:80:u:p\n\n2.2.2.2:8080\n')
 	assert len(ProxyPool.from_file(f).proxies) == 2
+
+
+def test_ipv6_proxy_keeps_its_brackets():
+	p = Proxy.parse('http://u:p@[2001:db8::1]:8080')
+	assert p.server == 'http://[2001:db8::1]:8080'
+	assert Proxy.parse(p.url) == p

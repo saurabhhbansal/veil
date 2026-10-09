@@ -10,6 +10,7 @@ seeing the same device from the same place.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -97,15 +98,16 @@ class StealthSession:
 	async def __aenter__(self) -> StealthSession:
 		try:
 			await self._open()
-		except BaseException:
-			if self.proxy:  # e.g. the exit lookup or the browser couldn't get through it
+		except BaseException as e:
+			if self.proxy and not isinstance(e, asyncio.CancelledError):  # e.g. the exit lookup or the browser couldn't get through it
 				self.report(ok=False)
 			await self.close()
 			raise
 		return self
 
 	async def __aexit__(self, exc_type, exc, tb) -> None:
-		if exc_type is not None and not self._outcome_reported:
+		# A cancellation is the user stopping the run, not the proxy failing.
+		if exc_type is not None and not issubclass(exc_type, asyncio.CancelledError) and not self._outcome_reported:
 			self.report(ok=False)
 		await self.close()
 
@@ -174,8 +176,8 @@ class StealthSession:
 				log.debug('browser-use stop failed: %s', e)
 			self.browser = None
 		if self._launched:
-			self._launched.close()
-			self._launched = None
+			launched, self._launched = self._launched, None
+			await asyncio.to_thread(launched.close)  # waits for the process to exit and the profile to be removed
 
 
 async def evaluate_isolated(browser: BrowserSession, expression: str) -> object:

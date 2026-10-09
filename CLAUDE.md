@@ -45,25 +45,27 @@ src/veil/
                 so only its layout was reused, not its agent/browser code.
 ```
 
-## Status (Windows PC, 2026-09-26)
+## Status (Windows PC, 2026-10-09)
 
 Verified on Windows x64 with the Fortress engine:
-- 46 unit tests; `veil check` 18/18 across NVIDIA/AMD/Intel personas (incl. WebGPU adapter, screen avail/outer size).
+- 58 unit tests; `veil check` 18/18 across NVIDIA/AMD/Intel personas (incl. WebGPU adapter, screen avail/outer size).
 - devices.json PCI IDs and Dawn WebGPU architecture names checked (no changes needed).
 - `veil run` and `veil ui` complete real tasks with OpenAI gpt-6-luna; UI Stop/Pause/Resume tested.
 - Fixed on first contact: the Windows launcher flags (a forced SwiftShader WebGPU adapter returned null), the host
   monitor's avail size leaking (now `--uxr-screen-avail-*` / `--uxr-outer-*`), and browser-use sending
   `frequency_penalty` to gpt-6 models (rejected with a 400).
 - **NOT yet verified:** a real proxy, and a site with serious bot protection.
-- Open detector findings: BrowserScan flags the `Accept-Language` header dropping `hi` (vs navigator.languages), a
-  timezone mismatch, and canvas/audio/WebGL noise; CreepJS sees the canvas/audio noise. Win10 personas get the
+- 2026-10-09 review fixed: Accept-Language vs navigator.languages (geo.py now emits only `locale,base`, which is
+  all Chromium 149 sends), temp profiles leaking on Windows, Turnstile widgets misread as challenge pages, SOCKS geo
+  lookups (needs `httpx[socks]`), Stop between attempts, fake "result" on unfinished runs, UI field clearing.
+- Open detector findings: BrowserScan (75%) flags a timezone mismatch (direct connection: the browser egresses over
+  IPv6, the geo lookup over IPv4; see RESEARCH_FINDINGS) and canvas/audio/WebGL noise; CreepJS sees the canvas/audio noise. Win10 personas get the
   host's Win11 fonts. Chrome 149 is behind stable (155).
 
 ## Next steps, in order
 
-1. Fix the `Accept-Language` / navigator.languages mismatch.
-2. Real proxy (phone first, see docs/PROXY_RESEARCH.md), then a harder target site.
-3. Roadmap in README.md: user takeover mid-task, human-like mouse and typing, proxy bandwidth savers,
+1. Real proxy (phone first, see docs/PROXY_RESEARCH.md), then a harder target site.
+2. Roadmap in README.md: user takeover mid-task, human-like mouse and typing, proxy bandwidth savers,
    phone-proxy IP rotation over ADB, concurrent sessions, growing devices.json from real device captures.
 
 ## Conventions

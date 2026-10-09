@@ -103,6 +103,8 @@ async def run_task(
 	result = TaskResult(ok=False, output=None)
 
 	for n in range(1, attempts_allowed + 1):
+		if hooks.stop_requested and hooks.stop_requested():  # Stop pressed after a block or crash: don't launch another identity
+			break
 		log.info('attempt %d/%d', n, attempts_allowed)
 		session = StealthSession(settings, identity=identity, proxy_source=proxy_source)
 		attempt = Attempt(proxy=None, exit_ip=None, persona=None, outcome='error')
@@ -130,7 +132,8 @@ async def run_task(
 				session.report(ok=done)
 				attempt.outcome = 'done' if done else 'failed'
 				attempt.detail = '; '.join(e for e in history.errors() if e)[-500:]
-				result.ok, result.output = done, history.final_result()
+				# Without a done action, final_result() is just the last action's log line (e.g. "Navigated to ..."), not an answer.
+				result.ok, result.output = done, history.final_result() if history.is_done() else None
 				await _call(hooks.on_attempt_end, n, attempt)
 				return result  # the agent finished (or gave up) on its own terms; retrying won't help
 		except Exception as e:

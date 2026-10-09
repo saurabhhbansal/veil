@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +35,24 @@ def test_ui_fields_override_settings_and_agent_kwargs():
 	assert (identity, max_steps) == ('shop1', 12)
 	assert kwargs == {'use_vision': False, 'max_actions_per_step': 3, 'extend_system_message': 'be brief'}
 	assert base.headless is True  # the env settings object is never mutated
+
+
+def test_prefilled_fields_can_be_cleared():
+	base = _base()
+	base.llm_base_url, base.cdp_url, base.proxy_file = 'http://llm', 'http://cdp', Path('proxies.txt')
+	s, *_ = settings_from_ui({'agent_settings.llm_base_url': '', 'stealth_settings.cdp_url': ' ', 'stealth_settings.proxy_file': ''}, base)
+	assert (s.llm_base_url, s.cdp_url, s.proxy_file) == (None, None, None)
+	s, *_ = settings_from_ui({}, base)  # fields not in the form keep .env
+	assert (s.llm_base_url, s.cdp_url, s.proxy_file) == ('http://llm', 'http://cdp', Path('proxies.txt'))
+
+
+def test_switching_provider_never_reuses_the_env_key():
+	s, *_ = settings_from_ui({'agent_settings.llm_provider': 'groq', 'agent_settings.llm_api_key': ''}, _base())
+	assert s.llm_api_key is None  # build_llm falls back to GROQ_API_KEY instead of sending the OpenAI key to Groq
+	s, *_ = settings_from_ui({'agent_settings.llm_provider': 'groq', 'agent_settings.llm_api_key': 'gsk-ui'}, _base())
+	assert s.llm_api_key == 'gsk-ui'
+	s, *_ = settings_from_ui({'agent_settings.llm_provider': 'openai'}, _base())
+	assert s.llm_api_key == 'sk-env'
 
 
 def test_saved_configs_never_contain_secrets_and_stay_in_their_dir(tmp_path):

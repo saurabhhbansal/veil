@@ -14,6 +14,7 @@ import os
 import shutil
 import socket
 import subprocess
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,21 +37,32 @@ class LaunchedBrowser:
 
 	def close(self) -> None:
 		if self._proc and self._proc.poll() is None:
-			if os.name == 'nt':  # the .cmd launcher runs chrome as a child of cmd.exe; kill the whole tree
+			if os.name == 'nt':  # kill chrome's child processes (GPU, renderers, ...) too
 				subprocess.run(['taskkill', '/F', '/T', '/PID', str(self._proc.pid)], capture_output=True)
 			else:
 				self._proc.terminate()
-				try:
-					self._proc.wait(timeout=10)
-				except subprocess.TimeoutExpired:
-					self._proc.kill()
+			try:
+				self._proc.wait(timeout=10)
+			except subprocess.TimeoutExpired:
+				self._proc.kill()
 		self._proc = None
 		if self._container:
 			subprocess.run(['docker', 'rm', '-f', self._container], capture_output=True)
 			self._container = None
 		for p in self._cleanup:
-			shutil.rmtree(p, ignore_errors=True)
+			_rmtree_retry(p)
 		self._cleanup.clear()
+
+
+def _rmtree_retry(path: Path, attempts: int = 10) -> None:
+	# On Windows the killed child processes release their profile file handles a moment after the
+	# parent exits, so a single rmtree leaves the temp profile behind.
+	for _ in range(attempts):
+		shutil.rmtree(path, ignore_errors=True)
+		if not path.exists():
+			return
+		time.sleep(0.5)
+	log.debug('could not remove profile dir %s', path)
 
 
 class Engine(Protocol):
@@ -67,12 +79,13 @@ def _free_port() -> int:
 
 async def _wait_for_cdp(port: int, proc: subprocess.Popen | None = None, timeout: float = 90.0) -> str:
 	url = f'http://127.0.0.1:{port}/json/version'
+	opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via a system/env proxy
 	deadline = asyncio.get_running_loop().time() + timeout
 	while asyncio.get_running_loop().time() < deadline:
 		if proc is not None and proc.poll() is not None:
 			raise RuntimeError(f'browser exited with code {proc.returncode} before CDP came up')
 		try:
-			data = await asyncio.to_thread(lambda: json.load(urllib.request.urlopen(url, timeout=2)))
+			data = await asyncio.to_thread(lambda: json.load(opener.open(url, timeout=2)))
 			if data.get('webSocketDebuggerUrl'):
 				return f'http://127.0.0.1:{port}'
 		except Exception:
@@ -115,7 +128,9 @@ class FortressEngine:
 				f'Fortress has no native build for this host ({plat or "unknown"}); '
 				'use VEIL_ENGINE=fortress-docker (x64 hosts / Docker Desktop), VEIL_ENGINE=cdp, or VEIL_ENGINE=chromium for testing'
 			)
-		ch = tf._CHANNELS[self.settings.fortress_channel]
+		ch = tf._CHANNELS.get(self.settings.fortress_channel)
+		if ch is None:
+			raise ValueError(f'unknown FORTRESS_CHANNEL {self.settings.fortress_channel!r}; use one of {sorted(tf._CHANNELS)}')
 		return tf._download(plat, tf._host(ch['tag']), ch['tag'])
 
 	async def launch(self, persona: Persona, proxy: Proxy | None, profile_dir: Path, ephemeral: bool) -> LaunchedBrowser:
@@ -165,6 +180,8 @@ class FortressDockerEngine:
 	async def launch(self, persona: Persona, proxy: Proxy | None, profile_dir: Path, ephemeral: bool) -> LaunchedBrowser:
 		if not shutil.which('docker'):
 			raise RuntimeError('docker is not installed')
+		if self.settings.fortress_channel not in self.images:
+			raise ValueError(f'unknown FORTRESS_CHANNEL {self.settings.fortress_channel!r}; use one of {sorted(self.images)}')
 		port = _free_port()
 		name = f'veil-{os.getpid()}-{port}'
 		env_args = [a for k, v in persona.env().items() for a in ('-e', f'{k}={v}')]
@@ -205,10 +222,14 @@ class ChromiumEngine:
 	def binary(self) -> str:
 		if self.settings.chromium_path:
 			return self.settings.chromium_path
-		for name in ('chromium', 'chromium-browser', 'google-chrome'):
+		for name in ('chromium', 'chromium-browser', 'google-chrome', 'chrome'):
 			if found := shutil.which(name):
 				return found
-		pw = sorted((Path.home() / '.cache' / 'ms-playwright').glob('chromium-*/chrome-*/chrome'))
+		# Playwright's browser cache: ~/.cache on Linux, %LOCALAPPDATA% on Windows
+		roots = [Path.home() / '.cache' / 'ms-playwright']
+		if os.environ.get('LOCALAPPDATA'):
+			roots.append(Path(os.environ['LOCALAPPDATA']) / 'ms-playwright')
+		pw = sorted(p for root in roots for p in [*root.glob('chromium-*/chrome-*/chrome'), *root.glob('chromium-*/chrome-*/chrome.exe')])
 		if pw:
 			return str(pw[-1])
 		raise RuntimeError('no Chromium found; set VEIL_CHROMIUM_PATH or run `uvx playwright install chromium`')
@@ -218,7 +239,9 @@ class ChromiumEngine:
 		port = _free_port()
 		w, h = persona.window_size
 		args = [self.binary(), *_common_flags(port, profile_dir, proxy, self.settings.headless), f'--lang={persona.languages.split(",")[0]}', f'--accept-lang={persona.languages}', f'--window-size={w},{h}']
-		proc = subprocess.Popen(args, env={**os.environ, 'TZ': persona.timezone}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		# The MSVC runtime parses TZ POSIX-style (see fortress_command), so on Windows stock Chromium keeps the host zone.
+		env = os.environ if os.name == 'nt' else {**os.environ, 'TZ': persona.timezone}
+		proc = subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 		browser = LaunchedBrowser(cdp_url='', applies_persona=False, _proc=proc, _cleanup=[profile_dir] if ephemeral else [])
 		try:
 			browser.cdp_url = await _wait_for_cdp(port, proc)

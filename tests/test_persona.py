@@ -29,7 +29,7 @@ def test_device_is_coherent_with_its_machine_class():
 def test_geo_overrides_only_timezone_and_language():
 	base = P.generate(seed=7)
 	geo = base.with_geo(ExitInfo(ip='1.2.3.4', country='IN', timezone='Asia/Kolkata'))
-	assert geo.timezone == 'Asia/Kolkata' and geo.languages == 'en-IN,en,hi'
+	assert geo.timezone == 'Asia/Kolkata' and geo.languages == 'en-IN,en'
 	assert (geo.gpu_id, geo.canvas_seed, geo.screen_width) == (base.gpu_id, base.canvas_seed, base.screen_width)
 
 
@@ -37,7 +37,7 @@ def test_flags_and_env():
 	p = P.generate(seed=1, exit_info=ExitInfo(ip='x', country='DE', timezone='Europe/Berlin'))
 	flags = p.flags()
 	assert '--uxr-timezone=Europe/Berlin' in flags
-	assert '--accept-lang=de-DE,de,en' in flags
+	assert '--accept-lang=de-DE,de' in flags
 	assert not any(f.startswith('--user-agent') for f in flags)  # desyncs UA vs Client Hints
 	# WebGPU overrides must come after nothing else re-sets them, and window must fit the screen
 	w, h = p.window_size
@@ -54,3 +54,13 @@ def test_roundtrip_dict():
 def test_unknown_country_falls_back_to_en_us():
 	assert languages_for_country('ZZ') == 'en-US,en'
 	assert languages_for_country(None) == 'en-US,en'
+
+
+def test_languages_are_exactly_what_the_accept_language_header_carries():
+	# Chromium reduces Accept-Language to the first locale plus its base language; anything more in
+	# navigator.languages contradicts the header (observed: en-IN,en,hi -> `en-IN,en;q=0.9`).
+	from veil.geo import COUNTRY_LOCALES
+
+	for country in [*COUNTRY_LOCALES, 'ZZ']:
+		locale, base = languages_for_country(country).split(',')
+		assert base == locale.split('-')[0]

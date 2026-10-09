@@ -83,7 +83,8 @@ class Check:
 def compare(persona, exit_info, fp: dict, applies_persona: bool) -> list[Check]:
 	checks = [
 		Check('navigator.webdriver is false', fp['webdriver'] is False, False, fp['webdriver']),
-		Check('languages[0] matches persona', fp['languages'][:1] == persona.languages.split(',')[:1], persona.languages.split(',')[0], fp['languages'][:1]),
+		# All of them: the Accept-Language header carries the same list, and a header/JS disagreement is a tell.
+		Check('languages match persona', fp['languages'] == persona.languages.split(','), persona.languages.split(','), fp['languages']),
 		Check('timezone matches persona', same_tz(fp['timezone'], persona.timezone), persona.timezone, fp['timezone']),
 		Check('viewport fits inside screen', fp['inner'][0] <= fp['screen'][0] and fp['inner'][1] <= fp['screen'][1], f'<= {fp["screen"]}', fp['inner']),
 	]

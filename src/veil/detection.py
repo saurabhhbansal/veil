@@ -19,7 +19,8 @@ class BlockSignal:
 # (vendor, kind, where, pattern). `where` is 'title', 'html' or 'url'.
 _RULES: list[tuple[str, str, str, re.Pattern[str]]] = [
 	('cloudflare', 'challenge', 'title', re.compile(r'^\s*just a moment\.\.\.\s*$', re.I)),
-	('cloudflare', 'challenge', 'html', re.compile(r'/cdn-cgi/challenge-platform/.*?orchestrate|cf-chl-widget|id="challenge-form"', re.I)),
+	# Not `cf-chl-widget`: that is the iframe id of any embedded Turnstile (login and signup forms), not a challenge page.
+	('cloudflare', 'challenge', 'html', re.compile(r'/cdn-cgi/challenge-platform/[^"\'\s]*orchestrate|id="challenge-form"', re.I)),
 	('cloudflare', 'block', 'title', re.compile(r'attention required! \| cloudflare', re.I)),
 	('cloudflare', 'block', 'html', re.compile(r'cf-error-details|error code:?\s*1020', re.I)),
 	('akamai', 'block', 'html', re.compile(r'errors\.edgesuite\.net|Reference\s*#\d+\.[0-9a-f]+\.\d+', re.I)),

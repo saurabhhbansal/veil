@@ -138,6 +138,8 @@ class AgentRunner:
 				await asyncio.wait_for(asyncio.shield(self._task), timeout=15)
 			except (asyncio.TimeoutError, asyncio.CancelledError):
 				self._task.cancel()
+				# Let the run finish unwinding first, or its last message lands in the cleared chat.
+				await asyncio.wait({self._task}, timeout=15)
 		self.messages, self.identity_md, self.result = [], '_No run yet._', None
 		self.status = 'idle'
 		self.version += 1

@@ -31,19 +31,23 @@ class Proxy:
 	password: str | None = None
 
 	@property
+	def _hostport(self) -> str:
+		return f'[{self.host}]:{self.port}' if ':' in self.host else f'{self.host}:{self.port}'  # IPv6 needs brackets
+
+	@property
 	def server(self) -> str:
 		"""Credential-free form for Chromium's --proxy-server (it cannot take inline credentials)."""
-		return f'{self.scheme}://{self.host}:{self.port}'
+		return f'{self.scheme}://{self._hostport}'
 
 	@property
 	def url(self) -> str:
 		if self.username:
-			return f'{self.scheme}://{quote(self.username, safe="")}:{quote(self.password or "", safe="")}@{self.host}:{self.port}'
+			return f'{self.scheme}://{quote(self.username, safe="")}:{quote(self.password or "", safe="")}@{self._hostport}'
 		return self.server
 
 	@property
 	def redacted(self) -> str:
-		return f'{self.scheme}://{self.username + ":***@" if self.username else ""}{self.host}:{self.port}'
+		return f'{self.scheme}://{self.username + ":***@" if self.username else ""}{self._hostport}'
 
 	@property
 	def has_auth(self) -> bool:
@@ -56,8 +60,8 @@ class Proxy:
 		if not s:
 			raise ValueError('empty proxy string')
 		if '://' not in s:
-			parts = s.split(':')
-			if '@' not in s and len(parts) == 4:  # host:port:user:pass, the usual provider export format
+			parts = s.split(':', 3)  # the password may itself contain ':'
+			if '@' not in s and len(parts) == 4 and parts[1].isdigit():  # host:port:user:pass, the usual provider export format
 				host, port, user, pw = parts
 				s = f'{default_scheme}://{quote(user, safe="")}:{quote(pw, safe="")}@{host}:{port}'
 			else:

@@ -56,12 +56,26 @@ creation behind a phone.
 - **sannysoft:** everything passes after the screen avail/outer fix.
 - **CreepJS:** 0% headless, 0% stealth, "19% like headless". It detects the **canvas and audio noise**.
 - **BrowserScan:** 65% "authenticity". Flags: time zone mismatch (−10), language mismatch (−10), WebGL/audio/canvas
-  tampering (−5 each). The language flag is real: the `Accept-Language` header drops `hi`.
+  tampering (−5 each). The language flag is real: the `Accept-Language` header drops `hi`. (Fixed 2026-10-09: 75%, see log.)
 
 Takeaway: fingerprint noise is *detectable*, even when every value is internally consistent. Whether a given
 bot manager *punishes* noise is something only testing against real targets will tell.
 
 ## Log
+
+### 2026-10-09: Accept-Language is reduced by Chromium; direct connections egress over IPv6 (observed)
+
+**Accept-Language.** Probed the header (httpbin.org/headers) against `navigator.languages` with several language
+lists. Fortress 149 always sends only the first locale plus its base language, whatever `--accept-lang` says:
+`en-IN,en,hi` -> `en-IN,en;q=0.9`, `de-DE,de,en,fr` -> `de-DE,de;q=0.9`, `hi,en-IN,en` -> `hi`. `navigator.languages`
+kept the full list, which is the mismatch BrowserScan flagged. geo.py now emits only `locale,base`, so the two agree
+(BrowserScan 65% -> 75%, language flag gone).
+
+**Timezone on a direct connection.** BrowserScan saw the browser arrive over IPv6 (Airtel `2401:4900:...`) and
+geolocated that address to Florida, so it flags `Asia/Kolkata` as a mismatch. veil's exit lookup (ipinfo) went over
+IPv4 (`223.181.x.x`, India). On a dual-stack connection, the address a site sees can differ from the one the
+lookup sees, and IPv6 geolocation databases are less accurate. Through an HTTP proxy the proxy picks the egress, so
+this mostly affects direct runs. Open question: does the same happen with the phone proxy if the carrier hands out IPv6?
 
 ### 2026-09-26: Gmail signup stops at device/phone verification (observed)
 

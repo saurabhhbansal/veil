@@ -11,51 +11,55 @@ import httpx
 
 from veil.proxy import Proxy
 
-# Primary language tags per country, most-specific first. Anything missing falls back to en-US.
-COUNTRY_LANGUAGES: dict[str, str] = {
-	'US': 'en-US,en',
-	'GB': 'en-GB,en',
-	'CA': 'en-CA,en,fr-CA',
-	'AU': 'en-AU,en',
-	'NZ': 'en-NZ,en',
-	'IE': 'en-IE,en',
-	'IN': 'en-IN,en,hi',
-	'SG': 'en-SG,en',
-	'ZA': 'en-ZA,en',
-	'DE': 'de-DE,de,en',
-	'AT': 'de-AT,de,en',
-	'CH': 'de-CH,de,en',
-	'FR': 'fr-FR,fr,en',
-	'BE': 'fr-BE,fr,nl,en',
-	'NL': 'nl-NL,nl,en',
-	'ES': 'es-ES,es,en',
-	'MX': 'es-MX,es,en',
-	'AR': 'es-AR,es,en',
-	'CO': 'es-CO,es,en',
-	'IT': 'it-IT,it,en',
-	'PT': 'pt-PT,pt,en',
-	'BR': 'pt-BR,pt,en',
-	'PL': 'pl-PL,pl,en',
-	'SE': 'sv-SE,sv,en',
-	'NO': 'nb-NO,nb,en',
-	'DK': 'da-DK,da,en',
-	'FI': 'fi-FI,fi,en',
-	'TR': 'tr-TR,tr,en',
-	'RU': 'ru-RU,ru,en',
-	'UA': 'uk-UA,uk,en',
-	'JP': 'ja-JP,ja,en',
-	'KR': 'ko-KR,ko,en',
-	'CN': 'zh-CN,zh,en',
-	'TW': 'zh-TW,zh,en',
-	'HK': 'zh-HK,zh,en',
-	'ID': 'id-ID,id,en',
-	'VN': 'vi-VN,vi,en',
-	'TH': 'th-TH,th,en',
-	'PH': 'en-PH,en,fil',
-	'AE': 'en-AE,en,ar',
-	'SA': 'ar-SA,ar,en',
-	'EG': 'ar-EG,ar,en',
-	'IL': 'he-IL,he,en',
+# The locale a typical browser in each country runs. Anything missing falls back to en-US.
+#
+# Only the locale and its base language go into navigator.languages. Chromium 149 reduces the
+# Accept-Language header to exactly that pair (en-IN,en,hi is sent as `en-IN,en;q=0.9`), so any
+# extra language would make navigator.languages disagree with the header (BrowserScan flags it).
+COUNTRY_LOCALES: dict[str, str] = {
+	'US': 'en-US',
+	'GB': 'en-GB',
+	'CA': 'en-CA',
+	'AU': 'en-AU',
+	'NZ': 'en-NZ',
+	'IE': 'en-IE',
+	'IN': 'en-IN',
+	'SG': 'en-SG',
+	'ZA': 'en-ZA',
+	'DE': 'de-DE',
+	'AT': 'de-AT',
+	'CH': 'de-CH',
+	'FR': 'fr-FR',
+	'BE': 'fr-BE',
+	'NL': 'nl-NL',
+	'ES': 'es-ES',
+	'MX': 'es-MX',
+	'AR': 'es-AR',
+	'CO': 'es-CO',
+	'IT': 'it-IT',
+	'PT': 'pt-PT',
+	'BR': 'pt-BR',
+	'PL': 'pl-PL',
+	'SE': 'sv-SE',
+	'NO': 'nb-NO',
+	'DK': 'da-DK',
+	'FI': 'fi-FI',
+	'TR': 'tr-TR',
+	'RU': 'ru-RU',
+	'UA': 'uk-UA',
+	'JP': 'ja-JP',
+	'KR': 'ko-KR',
+	'CN': 'zh-CN',
+	'TW': 'zh-TW',
+	'HK': 'zh-HK',
+	'ID': 'id-ID',
+	'VN': 'vi-VN',
+	'TH': 'th-TH',
+	'PH': 'en-PH',
+	'AE': 'en-AE',
+	'SA': 'ar-SA',
+	'EG': 'ar-EG',
+	'IL': 'he-IL',
 }
 
 DEFAULT_LANGUAGES = 'en-US,en'
@@ -74,7 +78,8 @@ class ExitInfo:
 
 
 def languages_for_country(country: str | None) -> str:
-	return COUNTRY_LANGUAGES.get((country or '').upper(), DEFAULT_LANGUAGES)
+	locale = COUNTRY_LOCALES.get((country or '').upper())
+	return f'{locale},{locale.split("-")[0]}' if locale else DEFAULT_LANGUAGES
 
 
 async def lookup_exit(proxy: Proxy | None, timeout: float = 15.0) -> ExitInfo:

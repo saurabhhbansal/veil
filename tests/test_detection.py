@@ -28,6 +28,9 @@ def test_detects(url, title, html, vendor, kind):
 		('Cloudflare Blog', 'We wrote about how to wait for just a moment... before deploying.'),
 		('Access control lists explained', 'Access denied errors happen when...'),
 		('Example Domain', '<h1>Example Domain</h1>'),
+		# a login form with an embedded Turnstile widget is not a challenge page
+		('Sign in', '<form><div class="cf-turnstile"><iframe id="cf-chl-widget-a1b2c" src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/x"></iframe></div></form>'),
+		('Shop', '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script><p>orchestrate your wardrobe</p>'),
 	],
 )
 def test_ignores_normal_pages(title, html):
