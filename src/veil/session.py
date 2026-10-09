@@ -152,17 +152,20 @@ class StealthSession:
 		self.browser = BrowserSession(cdp_url=self._launched.cdp_url, browser_profile=profile)
 		await self.browser.start()
 
-	async def check_block(self) -> BlockSignal | None:
-		"""Classify the current page. Runs in an isolated world, invisible to page scripts."""
+	async def probe_page(self) -> dict | None:
+		"""{url, title, html} of the focused page, read in an isolated world invisible to page scripts."""
 		if not self.browser:
 			return None
 		try:
-			raw = await evaluate_isolated(self.browser, PAGE_PROBE_JS)
-			page = json.loads(raw)
+			return json.loads(await evaluate_isolated(self.browser, PAGE_PROBE_JS))
 		except Exception as e:
-			log.debug('block probe failed: %s', e)
+			log.debug('page probe failed: %s', e)
 			return None
-		return classify(page['url'], page['title'], page['html'])
+
+	async def check_block(self) -> BlockSignal | None:
+		"""Classify the current page."""
+		page = await self.probe_page()
+		return classify(page['url'], page['title'], page['html']) if page else None
 
 	def report(self, *, ok: bool, blocked: bool = False) -> None:
 		self._outcome_reported = True

@@ -9,10 +9,11 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "browser-use>=0.13.10",
-    "gradio>=5.27",
+    "fastapi>=0.115",
     "httpx[socks]>=0.28.1",
     "python-dotenv>=1.2.2",
     "tilion-fortress>=151.0.7908.0.post5",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]

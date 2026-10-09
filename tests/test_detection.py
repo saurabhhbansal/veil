@@ -1,6 +1,6 @@
 import pytest
 
-from veil.detection import classify
+from veil.detection import classify, find_captcha
 
 
 @pytest.mark.parametrize(
@@ -43,3 +43,14 @@ def test_timezone_aliases_compare_equal():
 	assert same_tz('Asia/Calcutta', 'Asia/Kolkata')
 	assert same_tz('Europe/Berlin', 'Europe/Berlin')
 	assert not same_tz('Europe/Berlin', 'Europe/Paris')
+
+
+def test_find_captcha_spots_interactive_widgets_only():
+	assert find_captcha('<iframe src="https://www.google.com/recaptcha/api2/anchor?ar=1&k=x&size=normal&v=1">').vendor == 'recaptcha'
+	assert find_captcha('<iframe src="https://www.google.com/recaptcha/api2/anchor?ar=1&k=x&size=invisible">') is None
+	assert find_captcha('<script src="https://www.google.com/recaptcha/api.js?render=KEY"></script>') is None  # v3: nothing to solve
+	assert find_captcha('<iframe src="https://newassets.hcaptcha.com/captcha/v1/abc/static/hcaptcha.html#frame=checkbox&id=1">').vendor == 'hcaptcha'
+	assert find_captcha('<iframe src="https://newassets.hcaptcha.com/captcha/v1/abc/static/hcaptcha.html#frame=checkbox-invisible">') is None
+	assert find_captcha('<form action="/errors/validateCaptcha">').vendor == 'amazon'
+	assert find_captcha('<div class="cf-turnstile" data-sitekey="x"></div>') is None  # usually passes by itself
+	assert find_captcha('<p>plain page</p>') is None

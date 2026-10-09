@@ -39,11 +39,20 @@ src/veil/
   detection.py  classify(url, title, html) -> BlockSignal (Cloudflare/Akamai/PX/DataDome/Imperva/Google)
   agent.py      run_task: Agent + on_step_end block guard; rotates identity and retries on a block
   check.py      `veil check`: compares the page-visible fingerprint with the persona
+  accounts.py   `veil signup` / `veil accounts`: the user's own profiles.csv -> domain-scoped sensitive_data placeholders;
+                signups.csv logs site/profile/status, one account per site, each on its own sticky identity
   cli.py        run | ui | check | persona | proxies | identities
-  webui/        `veil ui`: Gradio panel adapted from browser-use/web-ui (MIT). runner.py = UI-agnostic run state
-                (RunHooks into agent.run_task); tabs/run_tab/interface = Gradio. web-ui itself pins browser-use 0.1.48,
-                so only its layout was reused, not its agent/browser code.
+  webui/        `veil ui`: server.py = FastAPI API + the chat app (web/out); live.py = interactive live view (2nd CDP
+                connection: screencast out, Input.* in); runner.py = UI-agnostic run state, events, take_over/hand_back
+                (RunHooks into agent.run_task); manager.py = UI values -> Settings. The Gradio panel was removed 2026-10-09.
+web/            Next.js static export adapted from browser-use/chat-ui-example (MIT); Browser Use Cloud SDK removed,
+                talks only to the local API. `npm run build` -> web/out, served by `veil ui`.
 ```
+
+Human takeover: RunHooks.request_human pauses the agent (status needs_human). _BlockGuard hands interactive
+CAPTCHAs (detection.find_captcha) and unsolved challenges to the person once per page before rotating; the agent
+also has a `request_human_help` action. hand_back() injects an ActionResult note into agent.state.last_result.
+Not Browser Use Cloud: veil never uses hosted browser services (user decision, 2026-10-09).
 
 ## Status (Windows PC, 2026-10-09)
 
@@ -65,7 +74,7 @@ Verified on Windows x64 with the Fortress engine:
 ## Next steps, in order
 
 1. Real proxy (phone first, see docs/PROXY_RESEARCH.md), then a harder target site.
-2. Roadmap in README.md: user takeover mid-task, human-like mouse and typing, proxy bandwidth savers,
+2. Roadmap in README.md: human-like mouse and typing, proxy bandwidth savers,
    phone-proxy IP rotation over ADB, concurrent sessions, growing devices.json from real device captures.
 
 ## Conventions

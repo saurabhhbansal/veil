@@ -8,10 +8,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from browser_use import Agent
+from browser_use import ActionResult, Agent, Tools
 
 from veil.config import Settings
-from veil.detection import BlockSignal
+from veil.detection import BlockSignal, classify, find_captcha
 from veil.llm import build_llm
 from veil.session import Identity, StealthSession, make_proxy_source
 
@@ -47,12 +47,17 @@ class RunHooks:
 	on_step is browser-use's register_new_step_callback(state_summary, model_output, step_number).
 	on_attempt_end(n, attempt) fires after each attempt with its outcome.
 	stop_requested() says the user stopped the run (browser-use's own `stopped` flag also covers a crashed browser).
+	request_human(reason, detail) asks the person watching to take over the browser (a CAPTCHA, a 2FA code). It
+	should pause the agent and return; the UI resumes it once the person is done. With it set, a CAPTCHA or a
+	challenge page that doesn't clear is handed to the person first instead of burning the identity, and the
+	agent gets a `request_human_help` action. Without it (the CLI), a challenge still rotates the identity.
 	"""
 
 	on_attempt: Callable[[int, int, StealthSession, Agent], Awaitable[None] | None] | None = None
 	on_step: Callable[..., Awaitable[None] | None] | None = None
 	on_attempt_end: Callable[[int, Attempt], Awaitable[None] | None] | None = None
 	stop_requested: Callable[[], bool] | None = None
+	request_human: Callable[[str, dict[str, Any]], Awaitable[None] | None] | None = None
 
 
 async def _call(fn, *args) -> None:
@@ -63,26 +68,74 @@ async def _call(fn, *args) -> None:
 		await res
 
 
-class _BlockGuard:
-	"""on_step_end hook: stop the agent as soon as it lands on a block/challenge that won't clear."""
+def _page_key(vendor: str, url: str) -> tuple[str, str]:
+	return vendor, (url or '').split('#')[0].split('?')[0]
 
-	def __init__(self, session: StealthSession):
+
+class _BlockGuard:
+	"""on_step_end hook: stop the agent as soon as it lands on a block/challenge that won't clear.
+
+	With `request_human`, a CAPTCHA or an unsolved challenge goes to the person first (once per page); only if
+	the page is still a challenge after they had a go does the guard rotate the identity.
+	"""
+
+	def __init__(self, session: StealthSession, request_human=None):
 		self.session = session
+		self.request_human = request_human
 		self.signal: BlockSignal | None = None
+		self.handed_over: set[tuple[str, str]] = set()  # (vendor, page) the person already had a go at
+
+	async def _page(self) -> tuple[dict | None, BlockSignal | None]:
+		page = await self.session.probe_page()
+		return page, classify(page['url'], page['title'], page['html']) if page else None
 
 	async def __call__(self, agent: Agent) -> None:
-		signal = await self.session.check_block()
+		page, signal = await self._page()
 		if signal and signal.kind == 'challenge':
 			log.info('challenge detected (%s, %s); waiting up to %ss for it to clear', signal.vendor, signal.evidence, CHALLENGE_GRACE_SECONDS)
 			for _ in range(CHALLENGE_GRACE_SECONDS // 2):
 				await asyncio.sleep(2)
-				signal = await self.session.check_block()
+				page, signal = await self._page()
 				if not signal:
-					return
+					break
+		if not page:
+			return
+		captcha = find_captcha(page['html']) if self.request_human else None
+		# A hard block (Cloudflare 1020, Akamai) has nothing to solve, unless it carries a CAPTCHA (Google /sorry/).
+		human = captcha if captcha else (signal if signal and signal.kind == 'challenge' else None)
+		finished = getattr(agent, 'history', None) is not None and agent.history.is_done()
+		if human and self.request_human and not finished:  # a finished agent has nothing left to do on the page
+			key = _page_key(human.vendor, page['url'])
+			if key not in self.handed_over:
+				self.handed_over.add(key)
+				log.info('%s %s on %s: asking the person to solve it', human.vendor, human.kind, page['url'])
+				await _call(
+					self.request_human,
+					f'{human.vendor} {"CAPTCHA" if human.kind == "captcha" else "challenge"} on this page',
+					{'source': 'detector', 'vendor': human.vendor, 'kind': human.kind, 'url': page['url'], 'evidence': human.evidence},
+				)
+				return
 		if signal:
 			log.warning('blocked by %s (%s): rotating identity', signal.vendor, signal.evidence)
 			self.signal = signal
 			agent.stop()
+
+
+def _human_tools(request_human) -> Tools:
+	"""browser-use's default actions plus one to hand the browser to the person watching."""
+	tools = Tools()
+
+	@tools.action(
+		'Ask the human operator to take over the browser for something only a person can do: a CAPTCHA or '
+		'"verify you are human" check, a 2FA / SMS / email code, or a login you have no credentials for. '
+		'The run pauses until they finish. Do not use it for anything you can do yourself.'
+	)
+	async def request_human_help(reason: str) -> ActionResult:
+		await _call(request_human, reason, {'source': 'agent'})
+		msg = f'Asked the human operator for help: {reason}. They take over the browser before your next step.'
+		return ActionResult(extracted_content=msg, long_term_memory=msg)
+
+	return tools
 
 
 async def run_task(
@@ -114,8 +167,11 @@ async def run_task(
 				attempt.proxy = session.proxy.redacted if session.proxy else None
 				attempt.exit_ip = session.exit.ip if session.exit else None
 				attempt.persona = session.persona.summary() if session.persona else None
-				guard = _BlockGuard(session)
-				agent = Agent(task=task, llm=llm, browser_session=session.browser, register_new_step_callback=hooks.on_step, **(agent_kwargs or {}))
+				guard = _BlockGuard(session, hooks.request_human)
+				kwargs = dict(agent_kwargs or {})
+				if hooks.request_human and 'tools' not in kwargs:
+					kwargs['tools'] = _human_tools(hooks.request_human)
+				agent = Agent(task=task, llm=llm, browser_session=session.browser, register_new_step_callback=hooks.on_step, **kwargs)
 				await _call(hooks.on_attempt, n, attempts_allowed, session, agent)
 				history = await agent.run(max_steps=max_steps or settings.max_steps, on_step_end=guard)
 

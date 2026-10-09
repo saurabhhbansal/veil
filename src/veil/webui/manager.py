@@ -1,18 +1,19 @@
-# Component registry and config save/load adapted from browser-use/web-ui
-# (src/webui/webui_manager.py, MIT License, Copyright (c) 2024 Browser Use Inc.; see LICENSE-web-ui).
-"""Registry of the UI's input components, the mapping from their values to veil Settings, and config files."""
+"""What the chat app may choose for a run, and the mapping from its values to veil Settings."""
 from __future__ import annotations
 
 import copy
-import json
-import time
 from pathlib import Path
 from typing import Any
 
 from veil.config import Settings
 
-# Never written to a saved config: they belong in .env.
-SECRET_IDS = {'agent_settings.llm_api_key', 'stealth_settings.proxy_gateway'}
+PROVIDERS = ['openai', 'groq', 'anthropic', 'google', 'openai-compatible']
+ENGINES = ['fortress', 'fortress-docker', 'cdp', 'chromium']
+
+
+def saved_identities(settings: Settings) -> list[str]:
+	root = settings.data_dir / 'identities'
+	return sorted(p.parent.name for p in root.glob('*/identity.json')) if root.exists() else []
 
 
 def _blank(v: Any) -> bool:
@@ -70,41 +71,3 @@ def settings_from_ui(values: dict[str, Any], base: Settings) -> tuple[Settings, 
 		agent_kwargs['extend_system_message'] = text('agent_settings.extend_system_prompt')
 	return s, text('stealth_settings.identity'), max_steps, agent_kwargs
 
-
-class WebuiManager:
-	def __init__(self, config_dir: Path):
-		self.id_to_component: dict[str, Any] = {}
-		self.component_to_id: dict[Any, str] = {}
-		self.config_dir = config_dir
-
-	def add_components(self, tab_name: str, components: dict[str, Any]) -> None:
-		for name, comp in components.items():
-			cid = f'{tab_name}.{name}'
-			self.id_to_component[cid] = comp
-			self.component_to_id[comp] = cid
-
-	def get_components(self) -> list[Any]:
-		return list(self.id_to_component.values())
-
-	def get_component_by_id(self, cid: str) -> Any:
-		return self.id_to_component[cid]
-
-	def values_by_id(self, components: dict[Any, Any]) -> dict[str, Any]:
-		return {self.component_to_id[c]: val for c, val in components.items() if c in self.component_to_id}
-
-	# --- config files ------------------------------------------------------------------------
-
-	def list_configs(self) -> list[str]:
-		return sorted((p.name for p in self.config_dir.glob('*.json')), reverse=True) if self.config_dir.exists() else []
-
-	def save_config(self, values: dict[str, Any]) -> Path:
-		self.config_dir.mkdir(parents=True, exist_ok=True)
-		keep = {k: val for k, val in values.items() if k not in SECRET_IDS}
-		path = self.config_dir / f'{time.strftime("%Y%m%d-%H%M%S")}.json'
-		path.write_text(json.dumps(keep, indent=2, default=str))
-		return path
-
-	def load_config(self, name: str) -> dict[str, Any]:
-		path = self.config_dir / Path(name).name  # a bare file name: never read outside the config dir
-		data = json.loads(path.read_text())
-		return {k: val for k, val in data.items() if k in self.id_to_component and k not in SECRET_IDS}

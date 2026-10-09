@@ -49,6 +49,11 @@ class Settings:
 	max_attempts: int = 3
 	max_steps: int = 40
 	data_dir: Path = field(default_factory=lambda: Path.home() / '.veil')
+	profiles_file: Path | None = None  # your own sign-up details; default <data_dir>/accounts/profiles.csv
+
+	@property
+	def accounts_dir(self) -> Path:
+		return self.data_dir / 'accounts'
 
 	@classmethod
 	def from_env(cls, env_file: str | Path | None = '.env') -> Settings:
@@ -79,4 +84,6 @@ class Settings:
 		dd = _opt('VEIL_DATA_DIR')
 		if dd:
 			s.data_dir = Path(dd).expanduser()
+		pr = _opt('VEIL_PROFILES_FILE')
+		s.profiles_file = Path(pr).expanduser() if pr else None
 		return s

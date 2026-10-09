@@ -52,23 +52,34 @@ uv run veil check           # first run downloads Fortress (~300 MB, SHA-256 ver
 
 ## Usage
 
-### Web control panel
+### Chat app
 
 ```bash
-uv run veil ui                       # opens http://127.0.0.1:7788 in your browser
+cd web && npm install && npm run build && cd ..   # once (Node.js 20+); rebuild after changing web/
+uv run veil ui                                    # opens http://127.0.0.1:7788 in your browser
 ```
 
-Type a task, press **Submit Task**, and watch:
-- **Agent Interaction:** each step's goal, actions and screenshot, then the result and every attempt made.
-- **Browser Live View:** a screenshot of the stealth browser every second.
-- **Current identity:** the exit IP and the fake device the site is seeing right now.
-- **Stop / Pause / Resume / Clear:** Stop finishes the current step and doesn't count against the proxy.
+Type a task (the icons under the box set the LLM, sticky identity, engine, geo-match / attempts, and window), then:
+- **Chat (left):** each step's goal and actions, the identities tried, blocks, and the result. Follow-up messages start a new task.
+- **Agent's Browser (right):** the live stealth browser, and it's **interactive**: click, scroll, type, paste and use the
+  address bar. Your first click or key press pauses the agent before its next step (**Take control** does the same);
+  **Hand back to agent** lets it carry on, with an optional note it will read.
+- **CAPTCHAs stop for you:** when veil spots an interactive CAPTCHA (reCAPTCHA/hCaptcha checkbox, Arkose, GeeTest, AWS WAF,
+  Amazon, image captchas) or a challenge page that doesn't clear by itself, the agent pauses and the panel says
+  **Human needed**. Solve it in the browser view and press **Done, continue**. The agent can also ask by itself
+  (`request_human_help`) for 2FA codes or logins it has no credentials for. If a challenge is still there after you
+  had a go, veil rotates to a fresh identity as before. Each page is handed to you once.
+- **Stop / Pause:** Stop finishes the current step and doesn't count against the proxy.
 
-The **Agent Settings** and **Stealth & Network** tabs override `.env` for the next run (blank fields keep `.env`).
-**Load & Save Config** saves those settings without API keys or proxy credentials. Runs are kept in `~/.veil/runs/`
-(step screenshots, `result.json`, a GIF). The UI binds to this PC only and has no login, so don't expose it with
-`--host 0.0.0.0` on a network you don't trust. It's adapted from [browser-use/web-ui](https://github.com/browser-use/web-ui)
-(MIT): same layout, rebuilt on veil's `StealthSession` and browser-use 0.13.
+Everything runs on this PC (FastAPI server + Fortress); no hosted browser service is involved. The live view is a
+second CDP connection (screencast out, `Input.*` events in), invisible to pages. Runs are kept in `~/.veil/runs/` (step
+screenshots, `result.json`, a GIF). The UI binds to this PC only, has no login, and refuses requests from other origins
+(so other websites can't drive it); don't expose it with `--host 0.0.0.0` on a network you don't trust.
+For front-end work: `uv run veil ui --dev` plus `npm run dev` in `web/` (port 3000).
+
+The chat app is adapted from [browser-use/chat-ui-example](https://github.com/browser-use/chat-ui-example) (MIT, see
+`web/LICENSE-chat-ui-example`) with its Browser Use Cloud SDK replaced by veil's local API. It replaced the earlier
+Gradio panel (from browser-use/web-ui).
 
 ### Command line
 
@@ -81,6 +92,9 @@ uv run veil proxies                  # exit IP / country / latency for each conf
 uv run veil persona --seed 42        # inspect a generated persona and its flags
 uv run veil identities               # list saved sticky identities
 uv run veil --headful run "..."      # watch it work
+uv run veil accounts init            # create ~/.veil/accounts/profiles.csv; fill in your own details, one row per email
+uv run veil signup https://site.com  # sign up with one of them; status goes to ~/.veil/accounts/signups.csv
+uv run veil accounts                 # where each email was used, and the status
 ```
 
 As a library:
@@ -150,7 +164,7 @@ Verified on the ARM development VPS with the stock-Chromium engine:
 
 - [x] Run `veil check --screenshots` on Fortress and fix any surface that doesn't apply
 - [x] Web control panel (`veil ui`)
-- [ ] Let the user take over the browser mid-task (CAPTCHA, login), as web-ui's "ask for help" did
+- [x] Let the user take over the browser mid-task (CAPTCHA, login): interactive live view, CAPTCHA pause, hand back
 - [ ] Human-like input: curved mouse paths and typing cadence (browser-use clicks via CDP events)
 - [ ] Proxy bandwidth savers: optional resource blocking, disabling Chromium background traffic
 - [ ] Phone-proxy IP rotation via ADB airplane-mode toggle

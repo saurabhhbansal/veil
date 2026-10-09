@@ -1,1 +1,1 @@
-"""veil web UI: a Gradio control panel adapted from browser-use/web-ui, driving veil stealth sessions."""
+"""veil web UI: the local API and live browser view behind the chat app in web/."""

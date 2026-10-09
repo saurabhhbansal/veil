@@ -1,4 +1,4 @@
-"""Command line: `veil run`, `veil ui`, `veil check`, `veil persona`, `veil proxies`, `veil identities`."""
+"""Command line: `veil run`, `veil signup`, `veil accounts`, `veil ui`, `veil check`, `veil persona`, `veil proxies`, `veil identities`."""
 from __future__ import annotations
 
 import argparse
@@ -22,6 +22,63 @@ def _cmd_run(args: argparse.Namespace, settings: Settings) -> int:
 		print(f'attempt {i}: {a.outcome:8} proxy={a.proxy or "direct"} exit={a.exit_ip or "?"} {a.detail}')
 	print('\n' + (result.output or '(no output)'))
 	return 0 if result.ok else 1
+
+
+def _profiles_path(settings: Settings):
+	return settings.profiles_file or settings.accounts_dir / 'profiles.csv'
+
+
+def _cmd_signup(args: argparse.Namespace, settings: Settings) -> int:
+	from veil import accounts
+	from veil.agent import run_task
+
+	url, site = accounts.normalize_url(args.url), accounts.site_of(args.url)
+	profiles = accounts.load_profiles(_profiles_path(settings))
+	log = accounts.SignupLog(settings.accounts_dir / 'signups.csv')
+	profile, signup, exists = accounts.plan_signup(profiles, log, site, args.profile)
+	if exists:
+		print(f'{site}: already {signup.status} with {signup.email} (profile {signup.profile_id}, {signup.updated}). Not creating another account.')
+		return 0
+
+	print(f'{site}: signing up as profile {profile["id"]} ({profile["email"]}), sticky identity {signup.identity}')
+	values = accounts.placeholders(profile, signup.password)
+	result = asyncio.run(
+		run_task(
+			accounts.build_task(url, values),
+			settings,
+			identity_name=signup.identity,  # same device, IP and cookies when we come back to this site
+			max_steps=args.max_steps,
+			agent_kwargs={'sensitive_data': accounts.sensitive_data(site, values)},
+		)
+	)
+	signup.status, signup.note = accounts.parse_status(result.output)
+	if not result.output and result.attempts:
+		a = result.attempts[-1]
+		signup.note = f'{a.outcome}: {a.detail}'[:300]
+	log.record(signup)
+	print(f'{site}: {signup.status} - {signup.note}')
+	return 0 if signup.status in accounts.DONE_STATUSES else 1
+
+
+def _cmd_accounts(args: argparse.Namespace, settings: Settings) -> int:
+	from veil import accounts
+
+	path = _profiles_path(settings)
+	if args.action == 'init':
+		print(f'{"created" if accounts.init_profiles(path) else "already exists:"} {path}')
+		print('Fill in one row per email you own (dob as YYYY-MM-DD; leave password blank to get a random one per site).')
+		return 0
+	if args.action == 'profiles':
+		for p in accounts.load_profiles(path):
+			filled = [c for c in accounts.PROFILE_COLUMNS if p.get(c) and c not in ('id', 'email', 'password')]
+			print(f'{p["id"]:12} {p["email"]:35} {", ".join(filled)}')
+		return 0
+	log = accounts.SignupLog(settings.accounts_dir / 'signups.csv')
+	if not log.rows:
+		print(f'no signups yet ({log.path})')
+	for s in sorted(log.rows.values(), key=lambda s: s.site):
+		print(f'{s.site:30} {s.status:18} {s.email:35} {s.updated:16} {s.note[:80]}')
+	return 0
 
 
 def _cmd_check(args: argparse.Namespace, settings: Settings) -> int:
@@ -65,11 +122,12 @@ def _cmd_proxies(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def _cmd_ui(args: argparse.Namespace, settings: Settings) -> int:
-	from veil.webui.interface import launch
-
 	if args.host not in ('127.0.0.1', 'localhost'):
 		print(f'warning: the UI has no login and holds your API key; anyone who can reach {args.host}:{args.port} can drive it', file=sys.stderr)
-	launch(settings, host=args.host, port=args.port, open_browser=not args.no_browser, theme=args.theme)
+	from veil.webui.server import launch
+
+	print(f'veil ui on http://{args.host}:{args.port}' + (' (API for `npm run dev` on :3000)' if args.dev else ''))
+	launch(settings, host=args.host, port=args.port, open_browser=not args.no_browser and not args.dev, dev=args.dev)
 	return 0
 
 
@@ -95,7 +153,17 @@ def main(argv: list[str] | None = None) -> int:
 	r.add_argument('--max-steps', type=int)
 	r.set_defaults(fn=_cmd_run)
 
-	c = sub.add_parser('check', help='verify the fingerprint a page sees matches the persona')
+	sg = sub.add_parser('signup', help='create an account on a site with one of your profiles (see `veil accounts`)')
+	sg.add_argument('url')
+	sg.add_argument('--profile', help='profile id to use (default: random, or the one already used on this site)')
+	sg.add_argument('--max-steps', type=int)
+	sg.set_defaults(fn=_cmd_signup)
+
+	ac = sub.add_parser('accounts', help='your sign-up profiles and where each was used')
+	ac.add_argument('action', nargs='?', default='list', choices=['list', 'profiles', 'init'], help='list signups (default) | profiles | init (create profiles.csv)')
+	ac.set_defaults(fn=_cmd_accounts)
+
+	c = sub.add_parser('check',help='verify the fingerprint a page sees matches the persona')
 	c.add_argument('--screenshots', action='store_true', help='also screenshot public bot-detector pages into reports/')
 	c.set_defaults(fn=_cmd_check)
 
@@ -108,10 +176,10 @@ def main(argv: list[str] | None = None) -> int:
 	x.add_argument('--samples', type=int, default=3, help='gateway mode: how many sessions to sample')
 	x.set_defaults(fn=_cmd_proxies)
 
-	u = sub.add_parser('ui', help='open the web control panel (task box, live view, identity, pause/stop)')
+	u = sub.add_parser('ui', help='open the chat app: task chat, interactive live browser, take over / hand back, pause/stop')
 	u.add_argument('--host', default='127.0.0.1', help='interface to bind (default: this PC only)')
 	u.add_argument('--port', type=int, default=7788)
-	u.add_argument('--theme', default='Ocean', help='Gradio theme: Ocean, Soft, Monochrome, Glass, Origin, Citrus, Base, Default')
+	u.add_argument('--dev', action='store_true', help='API only, for the chat app under `npm run dev` in web/')
 	u.add_argument('--no-browser', action='store_true', help="don't open the page automatically")
 	u.set_defaults(fn=_cmd_ui)
 

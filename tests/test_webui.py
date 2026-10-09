@@ -8,8 +8,8 @@ import pytest
 from veil.agent import Attempt, TaskResult
 from veil.config import Settings
 from veil.webui import runner as runner_mod
-from veil.webui.manager import WebuiManager, settings_from_ui
-from veil.webui.runner import AgentRunner, RunRequest, step_markdown
+from veil.webui.manager import settings_from_ui
+from veil.webui.runner import AgentRunner, RunRequest, step_actions
 
 
 def _base():
@@ -55,20 +55,11 @@ def test_switching_provider_never_reuses_the_env_key():
 	assert s.llm_api_key == 'sk-env'
 
 
-def test_saved_configs_never_contain_secrets_and_stay_in_their_dir(tmp_path):
-	m = WebuiManager(config_dir=tmp_path / 'configs')
-	m.add_components('agent_settings', {'llm_api_key': object(), 'llm_model': object()})
-	m.add_components('stealth_settings', {'proxy_gateway': object()})
-	path = m.save_config({'agent_settings.llm_api_key': 'sk-secret', 'agent_settings.llm_model': 'x', 'stealth_settings.proxy_gateway': 'http://u:p@h:1'})
-	assert json.loads(path.read_text()) == {'agent_settings.llm_model': 'x'}
-	assert m.load_config('../configs/' + path.name) == {'agent_settings.llm_model': 'x'}  # only the bare name is used
-
-
-def test_step_markdown_shows_goal_and_actions():
-	action = SimpleNamespace(model_dump=lambda exclude_none: {'navigate': {'url': 'https://example.com'}})
-	out = SimpleNamespace(evaluation_previous_goal='ok', memory=None, next_goal='open the page', action=[action])
-	md = step_markdown(SimpleNamespace(url='https://example.com', title='Example'), out, 2)
-	assert '**Step 2**' in md and 'open the page' in md and '`navigate`' in md and 'Memory' not in md
+def test_step_actions_are_plain_data():
+	action = SimpleNamespace(model_dump=lambda exclude_none: {'navigate': {'url': 'https://example.com'}, 'wait': 3})
+	out = SimpleNamespace(action=[action])
+	assert step_actions(out) == [{'name': 'navigate', 'args': {'url': 'https://example.com'}}, {'name': 'wait', 'args': {'value': 3}}]
+	assert step_actions(SimpleNamespace()) == []
 
 
 class _FakeAgent:
@@ -101,14 +92,14 @@ async def test_runner_lifecycle_with_stop(tmp_path, monkeypatch):
 	with pytest.raises(RuntimeError):
 		r.start(RunRequest(task='again', settings=Settings()))  # one run at a time
 	await asyncio.sleep(0.05)
-	assert r.status == 'running' and 'Attempt 1/3' in r.identity_md
+	assert r.status == 'running' and r.identity['attempt'] == 1 and r.identity['total'] == 3
 
 	r.stop()
 	assert r.status == 'stopping'
 	await asyncio.wait_for(r._task, timeout=2)
 	assert r.status == 'idle' and not r.busy
-	last = r.messages[-1]['content']
-	assert 'Stopped' in last and 'Navigated to' not in last  # a stop shows no fake "result"
+	last = r.events[-1]
+	assert last['type'] == 'result' and last['stopped'] and last['output'] is None  # a stop shows no fake "result"
 	assert json.loads((r.run_dir / 'result.json').read_text())['attempts'][0]['outcome'] == 'stopped'
 
 
@@ -123,4 +114,85 @@ async def test_stop_while_identity_is_launching_cancels(tmp_path, monkeypatch):
 	await asyncio.sleep(0.05)
 	r.stop()
 	await asyncio.wait_for(r._task, timeout=2)  # the runner absorbs its own cancellation
-	assert r.status == 'idle' and 'before the agent started' in r.messages[-1]['content']
+	assert r.status == 'idle' and r.events[-1]['type'] == 'result' and r.events[-1]['stopped']
+
+
+class _PausableAgent(_FakeAgent):
+	def __init__(self):
+		super().__init__()
+		self.paused = False
+		self.state = SimpleNamespace(last_result=None)
+
+	def pause(self):
+		self.paused = True
+
+	def resume(self):
+		self.paused = False
+
+
+@pytest.mark.asyncio
+async def test_captcha_pauses_for_the_person_and_hand_back_tells_the_agent(tmp_path, monkeypatch):
+	agent = _PausableAgent()
+
+	async def fake_run_task(task, settings, identity_name=None, max_steps=None, *, hooks, agent_kwargs):
+		session = SimpleNamespace(persona=None, exit=None, proxy=None, identity=None, settings=settings, browser=object())
+		await hooks.on_attempt(1, 1, session, agent)
+		await hooks.request_human('recaptcha CAPTCHA on this page', {'source': 'detector', 'vendor': 'recaptcha', 'kind': 'captcha', 'url': 'https://a.test/'})
+		await agent.stopped.wait()
+		return TaskResult(ok=False, output=None, attempts=[])
+
+	monkeypatch.setattr(runner_mod, 'run_task', fake_run_task)
+	r = AgentRunner(runs_dir=tmp_path)
+	r.start(RunRequest(task='sign up', settings=Settings()))
+	await asyncio.sleep(0.05)
+	assert r.status == 'needs_human' and agent.paused and r.human['vendor'] == 'recaptcha'
+	snap = r.snapshot()
+	assert snap['browser_open'] and [e['type'] for e in snap['events']] == ['task', 'attempt', 'human']
+
+	assert r.hand_back('ticked the box')
+	assert r.status == 'running' and not agent.paused and r.human is None
+	memo = agent.state.last_result[-1].long_term_memory
+	assert 'recaptcha CAPTCHA' in memo and 'ticked the box' in memo
+	assert r.events[-1]['resolved'] and r.events[-1]['note'] == 'ticked the box'
+
+	assert r.take_over() and r.status == 'needs_human' and r.human['source'] == 'user'
+	r.stop()  # stopping while the person has the browser
+	await asyncio.wait_for(r._task, timeout=2)
+	assert r.status == 'idle' and r.human is None and r.events[-2]['outcome'] == 'stopped'
+
+
+def test_take_over_and_hand_back_do_nothing_without_a_run(tmp_path):
+	r = AgentRunner(runs_dir=tmp_path)
+	assert not r.take_over() and not r.hand_back() and r.status == 'idle'
+
+
+def test_live_key_events_map_to_cdp():
+	from veil.webui.live import key_event_params
+
+	(m, p), = key_event_params({'type': 'keyDown', 'key': 'a', 'code': 'KeyA', 'keyCode': 65})
+	assert m == 'Input.dispatchKeyEvent' and p['type'] == 'keyDown' and p['text'] == 'a'
+	(_, p), = key_event_params({'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'keyCode': 13})
+	assert p['text'] == '\r'
+	(_, p), = key_event_params({'type': 'keyDown', 'key': 'Backspace', 'code': 'Backspace', 'keyCode': 8})
+	assert p['type'] == 'rawKeyDown' and 'text' not in p
+	(_, p), = key_event_params({'type': 'keyDown', 'key': 'a', 'code': 'KeyA', 'keyCode': 65, 'modifiers': 2})
+	assert p['type'] == 'rawKeyDown' and p['commands'] == ['selectAll'] and 'text' not in p
+	assert key_event_params({'type': 'keyUp', 'key': 'a'})[0][1]['type'] == 'keyUp'
+	assert key_event_params({'type': 'char', 'key': 'a'}) == []
+
+
+def test_server_refuses_other_origins_and_odd_paths(tmp_path):
+	from fastapi.testclient import TestClient
+
+	from veil.webui.server import create_app, takes_control
+
+	app = create_app(Settings(data_dir=tmp_path), port=7788)
+	c = TestClient(app, base_url='http://127.0.0.1:7788')
+	assert c.get('/api/state').json()['status'] == 'idle'
+	assert c.post('/api/run', json={'task': 'x'}, headers={'origin': 'https://evil.example'}).status_code == 403
+	assert c.get('/api/state', headers={'host': 'evil.example:7788'}).status_code == 403  # DNS rebinding
+	assert c.post('/api/run', json={'task': ' '}).status_code == 400
+	assert c.get('/api/runs/..%2F..%2Fsecrets/x.txt').status_code == 404
+	assert 'llm_api_key' not in c.get('/api/config').json()
+	assert takes_control({'t': 'mouse', 'type': 'mousePressed'}) and not takes_control({'t': 'mouse', 'type': 'mouseMoved'})
+	assert not takes_control({'t': 'wheel'})

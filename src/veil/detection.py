@@ -12,7 +12,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BlockSignal:
 	vendor: str  # cloudflare | akamai | perimeterx | datadome | imperva | google | generic
-	kind: str  # 'challenge' may clear on its own after a few seconds; 'block' will not
+	kind: str  # 'challenge' may clear on its own after a few seconds; 'block' will not; 'captcha' needs a person
 	evidence: str
 
 
@@ -39,6 +39,30 @@ def classify(url: str, title: str, html: str) -> BlockSignal | None:
 		m = pattern.search(fields[where])
 		if m:
 			return BlockSignal(vendor=vendor, kind=kind, evidence=f'{where}: {m.group(0)[:80]!r}')
+	return None
+
+
+# Interactive CAPTCHA widgets a person has to solve. Invisible variants (reCAPTCHA v3 / invisible, hCaptcha
+# invisible, a Turnstile that passes on its own) are deliberately left out: they sit on ordinary login and
+# signup pages and need nobody. If one of those does turn interactive, the agent asks for help itself.
+_CAPTCHA_RULES: list[tuple[str, re.Pattern[str]]] = [
+	('recaptcha', re.compile(r'recaptcha/(?:api2|enterprise)/anchor\?[^"\'\s>]*size=(?:normal|compact)', re.I)),
+	('hcaptcha', re.compile(r'hcaptcha\.com/captcha/v1/[^"\'\s>]*frame=checkbox(?!-invisible)', re.I)),
+	('arkose', re.compile(r'client-api\.arkoselabs\.com|funcaptcha\.com/fc/|id="FunCaptcha"', re.I)),
+	('geetest', re.compile(r'class="geetest_(?:holder|panel|radar)', re.I)),
+	('aws-waf', re.compile(r'captcha\.awswaf\.com|AwsWafCaptcha', re.I)),
+	('amazon', re.compile(r'/errors/validateCaptcha', re.I)),
+	('text-captcha', re.compile(r'<img[^>]+(?:id|name|class)="[^"]*captcha[^"]*"[^>]*>', re.I)),
+]
+
+
+def find_captcha(html: str) -> BlockSignal | None:
+	"""An interactive CAPTCHA on the page, if any (kind 'captcha'). Pure, like `classify`."""
+	html = (html or '')[:200_000]
+	for vendor, pattern in _CAPTCHA_RULES:
+		m = pattern.search(html)
+		if m:
+			return BlockSignal(vendor=vendor, kind='captcha', evidence=f'html: {m.group(0)[:80]!r}')
 	return None
 
 
