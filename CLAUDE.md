@@ -65,6 +65,9 @@ session/browser/identity (queued past VEIL_MAX_PARALLEL); the app shows them as 
 (open, rename, download recording, delete: /api/runs/<id>/rename|delete).
 LLM effort: Settings.llm_effort (VEIL_LLM_EFFORT, llm.EFFORTS per provider): OpenAI reasoning_effort, Anthropic adaptive thinking +
 output_config.effort, Google thinking_level. Proxies: VEIL_PROXY_MODE (direct | list | gateway) picks the source and keeps the others in .env.
+Country-matched exits: account runs pass the profile's country (geo.country_code) as RunRequest.country -> run_task ->
+StealthSession -> ProxySource.acquire(country=). Lists learn countries from the last test (proxy-status.json); gateways
+fill {country}/{COUNTRY} (VEIL_PROXY_COUNTRY when none). No proxy there: any proxy, and the run posts a notice.
 Runs: runner.py writes <runs_dir>/<id>/run.json on every event (list_runs/load_run read it; older runs fall back to
 result.json). Steers: RunHooks.on_step_start injects them into agent.state.last_result; ones that arrive as the agent
 finishes go through RunHooks.take_followups -> agent.add_new_task + another agent.run in the same browser.

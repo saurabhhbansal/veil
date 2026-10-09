@@ -62,6 +62,7 @@ class RunRequest:
 	gate: asyncio.Semaphore | None = None  # wait for a browser slot first (runs split from one request)
 	proxy_source: ProxySource | None = None  # shared by runs at the same time, so each takes its own proxy
 	group: str | None = None  # the split request this run belongs to
+	country: str | None = None  # ISO code of where the person is: their exit IP is picked there
 
 
 def identity_info(n: int, total: int, session) -> dict[str, Any]:
@@ -448,6 +449,14 @@ class AgentRunner:
 		self._session, self._agent = session, agent
 		self.identity = identity_info(n, total, session)
 		self._event('attempt', identity=self.identity)
+		want = self._req.country if self._req else None
+		got = session.exit.country if getattr(session, 'exit', None) else None
+		if want and got and got.upper() != want.upper():
+			self._event(
+				'notice', level='info',
+				text=f'This person is in {want.upper()} but the exit IP is in {got.upper()}: no proxy for {want.upper()} is set up '
+				'(test your proxies so veil knows their countries, or use a gateway with {country}).',
+			)
 		if self._stop_requested:  # Stop was pressed while the identity was launching
 			agent.stop()
 		elif self.status != 'stopping':
@@ -506,7 +515,9 @@ class AgentRunner:
 		kwargs = dict(req.agent_kwargs)
 		if self.run_dir:
 			kwargs.setdefault('generate_gif', str(self.run_dir / 'recording.gif'))
-		extra = {'proxy_source': req.proxy_source} if req.proxy_source is not None else {}
+		extra: dict[str, Any] = {'proxy_source': req.proxy_source} if req.proxy_source is not None else {}
+		if req.country:
+			extra['country'] = req.country
 		try:
 			if req.gate:
 				async with req.gate:  # a browser slot: Stop while queued cancels here
@@ -633,7 +644,11 @@ class SessionHub:
 				mtime = settings.proxy_file.stat().st_mtime
 			except OSError:
 				return None  # the run reports the missing file itself
-			key = ('list', str(settings.proxy_file), mtime, settings.proxy_strategy)
+			try:
+				tested = (settings.data_dir / 'proxy-status.json').stat().st_mtime  # a test teaches proxies' countries
+			except OSError:
+				tested = 0
+			key = ('list', str(settings.proxy_file), mtime, settings.proxy_strategy, tested)
 		else:
 			return None
 		if key not in self._sources:

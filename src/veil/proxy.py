@@ -7,6 +7,11 @@ Two sources are supported:
 * ``GatewayProxy``: a provider's rotating gateway. Most residential providers select the exit
   IP from a session token embedded in the username (e.g. ``user-session-abc123``). Put
   ``{session}`` where that token goes, and each veil session gets its own sticky exit IP.
+  Put ``{country}`` (or ``{COUNTRY}``) where the provider takes a country code, and each
+  session exits in the country it asks for.
+
+Both take an optional ISO country code on ``acquire``: a session for a person in Germany gets a
+German exit when the source has one. A list learns each proxy's country from its last test.
 """
 from __future__ import annotations
 
@@ -86,7 +91,7 @@ class Proxy:
 
 
 class ProxySource(Protocol):
-	def acquire(self, session_key: str | None = None) -> Proxy | None: ...
+	def acquire(self, session_key: str | None = None, country: str | None = None) -> Proxy | None: ...
 
 	def report(self, proxy: Proxy | None, *, ok: bool, blocked: bool = False) -> None: ...
 
@@ -94,7 +99,7 @@ class ProxySource(Protocol):
 class NoProxy:
 	"""Direct connection. Your own IP carries all the reputation, so expect blocks on hard targets."""
 
-	def acquire(self, session_key: str | None = None) -> Proxy | None:
+	def acquire(self, session_key: str | None = None, country: str | None = None) -> Proxy | None:
 		return None
 
 	def report(self, proxy: Proxy | None, *, ok: bool, blocked: bool = False) -> None:
@@ -116,6 +121,7 @@ class ProxyPool:
 	strategy: str = 'round_robin'  # round_robin | random | least_used
 	base_cooldown: float = 60.0
 	max_cooldown: float = 3600.0
+	countries: dict[Proxy, str] = field(default_factory=dict)  # ISO code of each proxy's exit, where known
 	_stats: dict[Proxy, _Stats] = field(default_factory=dict, init=False)
 	_cursor: int = field(default=0, init=False)
 	_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -137,12 +143,16 @@ class ProxyPool:
 		now = time.monotonic() if now is None else now
 		return [p for p in self.proxies if self._stats[p].cooldown_until <= now]
 
-	def acquire(self, session_key: str | None = None) -> Proxy:
+	def acquire(self, session_key: str | None = None, country: str | None = None) -> Proxy:
+		"""The next proxy; with `country`, one that exits there if the list has any (otherwise any proxy)."""
 		with self._lock:
-			ready = self.available()
+			pool = self.proxies
+			if country:
+				pool = [p for p in self.proxies if self.countries.get(p) == country.upper()] or self.proxies
+			ready = [p for p in self.available() if p in pool]
 			if not ready:
 				# Everything is cooling down: take the one that recovers first rather than stall.
-				ready = [min(self.proxies, key=lambda p: self._stats[p].cooldown_until)]
+				ready = [min(pool, key=lambda p: self._stats[p].cooldown_until)]
 			if self.strategy == 'random':
 				chosen = random.choice(ready)
 			elif self.strategy == 'least_used':
@@ -178,17 +188,24 @@ class GatewayProxy:
 	"""Provider gateway with a ``{session}`` placeholder, e.g. ``http://user-session-{session}:pw@gw.example.com:823``."""
 
 	template: str
+	default_country: str = 'us'  # for {country} when a session asks for none
 
 	def __post_init__(self) -> None:
-		Proxy.parse(self.template.replace('{session}', 'probe'))  # validate early
+		self.acquire('probe')  # validate early
 
 	@property
 	def sticky(self) -> bool:
 		return '{session}' in self.template
 
-	def acquire(self, session_key: str | None = None) -> Proxy:
+	@property
+	def by_country(self) -> bool:
+		return '{country}' in self.template or '{COUNTRY}' in self.template
+
+	def acquire(self, session_key: str | None = None, country: str | None = None) -> Proxy:
 		token = session_key or secrets.token_hex(6)
-		return Proxy.parse(self.template.replace('{session}', token))
+		cc = (country or self.default_country).strip()
+		url = self.template.replace('{session}', token).replace('{country}', cc.lower()).replace('{COUNTRY}', cc.upper())
+		return Proxy.parse(url)
 
 	def report(self, proxy: Proxy | None, *, ok: bool, blocked: bool = False) -> None:
 		pass  # a fresh session token next time already means a fresh exit IP
@@ -225,6 +242,22 @@ def write_list(path: Path, proxies: list[Proxy]) -> None:
 	body = '# veil proxy list: one per line (scheme://user:pass@host:port). Edited from the veil app.\n'
 	tmp.write_text(body + ''.join(p.url + '\n' for p in proxies), encoding='utf-8')
 	tmp.replace(path)
+
+
+def load_countries(status_file: Path, proxies: list[Proxy]) -> dict[Proxy, str]:
+	"""Each proxy's exit country from its last successful test (the app's proxy-status.json)."""
+	import json
+
+	try:
+		data = json.loads(status_file.read_text(encoding='utf-8'))
+	except (OSError, ValueError):
+		return {}
+	out = {}
+	for p in proxies:
+		st = data.get(proxy_id(p)) if isinstance(data, dict) else None
+		if isinstance(st, dict) and st.get('ok') and st.get('country'):
+			out[p] = str(st['country']).upper()
+	return out
 
 
 def parse_many(text: str) -> tuple[list[Proxy], list[str]]:

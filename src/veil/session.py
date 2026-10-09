@@ -28,7 +28,7 @@ from veil.detection import PAGE_PROBE_JS, BlockSignal, classify
 from veil.engine import Engine, LaunchedBrowser, make_engine
 from veil.geo import ExitInfo, lookup_exit
 from veil.persona import Persona
-from veil.proxy import GatewayProxy, NoProxy, Proxy, ProxyPool, ProxySource
+from veil.proxy import GatewayProxy, NoProxy, Proxy, ProxyPool, ProxySource, load_countries
 
 log = logging.getLogger('veil.session')
 
@@ -37,9 +37,11 @@ _NAME_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
 
 def make_proxy_source(settings: Settings) -> ProxySource:
 	if settings.proxy_gateway:
-		return GatewayProxy(settings.proxy_gateway)
+		return GatewayProxy(settings.proxy_gateway, default_country=settings.proxy_country or 'us')
 	if settings.proxy_file:
-		return ProxyPool.from_file(settings.proxy_file, strategy=settings.proxy_strategy)
+		pool = ProxyPool.from_file(settings.proxy_file, strategy=settings.proxy_strategy)
+		pool.countries = load_countries(settings.data_dir / 'proxy-status.json', pool.proxies)
+		return pool
 	return NoProxy()
 
 
@@ -83,9 +85,12 @@ class StealthSession:
 		identity: Identity | None = None,
 		proxy_source: ProxySource | None = None,
 		engine: Engine | None = None,
+		country: str | None = None,
 	):
+		"""country: ISO code of where the person using this session is; the exit is picked there when possible."""
 		self.settings = settings
 		self.identity = identity
+		self.country = country
 		self.proxy_source = proxy_source or make_proxy_source(settings)
 		self.engine = engine or make_engine(settings)
 		self.proxy: Proxy | None = None
@@ -118,7 +123,8 @@ class StealthSession:
 		if ident and ident.proxy:
 			self.proxy = Proxy.parse(ident.proxy)
 		else:
-			self.proxy = self.proxy_source.acquire(ident.proxy_session if ident else None)
+			key = ident.proxy_session if ident else None
+			self.proxy = self.proxy_source.acquire(key, country=self.country) if self.country else self.proxy_source.acquire(key)
 			if ident and isinstance(self.proxy_source, ProxyPool) and self.proxy:
 				ident.proxy = self.proxy.url  # pin: a returning identity shouldn't hop IPs
 				ident.save(s)

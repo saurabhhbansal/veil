@@ -52,6 +52,7 @@ from fastapi.staticfiles import StaticFiles
 
 from veil import accounts, planner
 from veil.config import Settings
+from veil.geo import country_code
 from veil.llm import EFFORTS, KEY_ENV, MODELS, build_llm
 from veil.planner import Job
 from veil.webui import admin
@@ -255,6 +256,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		req = RunRequest(
 			task=task, title=title, kind=kind, settings=settings, identity=row.identity, max_steps=max_steps, agent_kwargs=agent_kwargs,
 			on_done=done, review=review, proxy_source=hub.proxy_source(settings),
+			country=country_code(profile.get('country')),  # exit where the person is, when a proxy there exists
 		)
 		return req, site, profile['id']
 

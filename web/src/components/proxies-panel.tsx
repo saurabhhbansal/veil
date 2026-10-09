@@ -131,7 +131,9 @@ export function ProxiesPanel({ open, onClose }: { open: boolean; onClose: () => 
                   })}
                 </div>
                 <p className="text-[12px] text-zinc-500 leading-relaxed">
-                  Sessions that run side by side each get a different exit. Timezone and language follow each exit IP. Saved to{" "}
+                  Sessions that run side by side each get a different exit. Sign-ups and log-ins exit in the country on the person&apos;s
+                  profile when a proxy there exists (test list proxies so veil learns their countries). Timezone and language follow each
+                  exit IP. Saved to{" "}
                   <code className="text-zinc-400 break-all">{state.env_file}</code>.
                 </p>
               </section>
@@ -250,6 +252,9 @@ export function ProxiesPanel({ open, onClose }: { open: boolean; onClose: () => 
                       {state.gateway.sticky
                         ? "Sticky: each session keeps its own exit IP."
                         : "Not sticky: add {session} where the provider's session id goes, or IPs change mid-run."}
+                      {state.gateway.server?.includes("{country}") || state.gateway.server?.includes("{COUNTRY}")
+                        ? " Picks each person's country."
+                        : " Add {country} where the provider takes a country code to match each person's country."}
                     </p>
                     <div className="flex items-center gap-3">
                       <TestResult t={state.gateway.status} />

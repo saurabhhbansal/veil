@@ -45,6 +45,7 @@ class Settings:
 	proxy_gateway: str | None = None
 	proxy_strategy: str = 'round_robin'
 	geo_match: bool = True
+	proxy_country: str | None = None  # gateway {country} when a session asks for none (default us)
 
 	# Orchestration
 	max_attempts: int = 3
@@ -90,6 +91,7 @@ class Settings:
 		elif mode == 'list':
 			s.proxy_gateway = None
 		s.geo_match = _bool('VEIL_GEO_MATCH', s.geo_match)
+		s.proxy_country = _opt('VEIL_PROXY_COUNTRY')
 		s.max_attempts = int(_opt('VEIL_MAX_ATTEMPTS') or s.max_attempts)
 		s.max_steps = int(_opt('VEIL_MAX_STEPS') or s.max_steps)
 		s.max_parallel = max(1, int(_opt('VEIL_MAX_PARALLEL') or s.max_parallel))

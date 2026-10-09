@@ -152,8 +152,10 @@ async def run_task(
 	hooks: RunHooks | None = None,
 	agent_kwargs: dict[str, Any] | None = None,
 	proxy_source: ProxySource | None = None,
+	country: str | None = None,
 ) -> TaskResult:
-	"""proxy_source: share one between runs that go at the same time, so each takes a different proxy."""
+	"""proxy_source: share one between runs that go at the same time, so each takes a different proxy.
+	country: ISO code of where the person is (an account run): the exit IP is picked there when the source can."""
 	hooks = hooks or RunHooks()
 	llm = build_llm(settings)
 	proxy_source = proxy_source or make_proxy_source(settings)  # shared across attempts so cooldowns carry over
@@ -166,7 +168,7 @@ async def run_task(
 		if hooks.stop_requested and hooks.stop_requested():  # Stop pressed after a block or crash: don't launch another identity
 			break
 		log.info('attempt %d/%d', n, attempts_allowed)
-		session = StealthSession(settings, identity=identity, proxy_source=proxy_source)
+		session = StealthSession(settings, identity=identity, proxy_source=proxy_source, **({'country': country} if country else {}))
 		attempt = Attempt(proxy=None, exit_ip=None, persona=None, outcome='error')
 		result.attempts.append(attempt)
 		try:

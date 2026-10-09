@@ -64,6 +64,18 @@ COUNTRY_LOCALES: dict[str, str] = {
 
 DEFAULT_LANGUAGES = 'en-US,en'
 
+# Country names people write in a profile's country field (ISO codes are accepted as they are).
+_COUNTRY_NAMES: dict[str, str] = {
+	'united states': 'US', 'united states of america': 'US', 'usa': 'US', 'united kingdom': 'GB', 'uk': 'GB', 'great britain': 'GB',
+	'england': 'GB', 'canada': 'CA', 'australia': 'AU', 'new zealand': 'NZ', 'ireland': 'IE', 'india': 'IN', 'singapore': 'SG',
+	'south africa': 'ZA', 'germany': 'DE', 'austria': 'AT', 'switzerland': 'CH', 'france': 'FR', 'belgium': 'BE', 'netherlands': 'NL',
+	'the netherlands': 'NL', 'spain': 'ES', 'mexico': 'MX', 'argentina': 'AR', 'colombia': 'CO', 'italy': 'IT', 'portugal': 'PT',
+	'brazil': 'BR', 'poland': 'PL', 'sweden': 'SE', 'norway': 'NO', 'denmark': 'DK', 'finland': 'FI', 'turkey': 'TR', 'russia': 'RU',
+	'ukraine': 'UA', 'japan': 'JP', 'south korea': 'KR', 'korea': 'KR', 'china': 'CN', 'taiwan': 'TW', 'hong kong': 'HK',
+	'indonesia': 'ID', 'vietnam': 'VN', 'thailand': 'TH', 'philippines': 'PH', 'united arab emirates': 'AE', 'uae': 'AE',
+	'saudi arabia': 'SA', 'egypt': 'EG', 'israel': 'IL',
+}
+
 
 @dataclass(frozen=True)
 class ExitInfo:
@@ -80,6 +92,14 @@ class ExitInfo:
 def languages_for_country(country: str | None) -> str:
 	locale = COUNTRY_LOCALES.get((country or '').upper())
 	return f'{locale},{locale.split("-")[0]}' if locale else DEFAULT_LANGUAGES
+
+
+def country_code(value: str | None) -> str | None:
+	"""A profile's country ('India', 'in', 'IN') -> ISO code 'IN'; None when blank or unknown."""
+	v = (value or '').strip()
+	if len(v) == 2 and v.isalpha():
+		return v.upper()
+	return _COUNTRY_NAMES.get(v.lower()) if v else None
 
 
 async def lookup_exit(proxy: Proxy | None, timeout: float = 15.0) -> ExitInfo:
