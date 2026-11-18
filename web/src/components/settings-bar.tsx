@@ -141,6 +141,10 @@ const EFFORT_HINT: Record<string, string> = {
   max: "Everything it has: slowest, most tokens",
 };
 
+/** The server's rule for an API key: printable, no spaces or quotes, 8-512 characters. */
+const KEY_OK = /^[\x21-\x7e]{8,512}$/;
+const keyLooksValid = (value: string) => KEY_OK.test(value) && !value.includes('"') && !value.includes("'");
+
 /** Default + the provider's levels on one slider. */
 function EffortSlider({ levels, value, onChange }: { levels: string[]; value: string; onChange: (v: string) => void }) {
   const stops = ["", ...levels];
@@ -178,6 +182,7 @@ function KeyRow({
   info,
   draft,
   onDraft,
+  onDraftBlur,
   busy,
   msg,
   onSave,
@@ -187,19 +192,16 @@ function KeyRow({
   info: KeyInfo;
   draft: string;
   onDraft: (value: string) => void;
+  onDraftBlur: () => void;
   busy: boolean;
   msg: { ok: boolean; text: string } | null;
   onSave: () => void;
   onRemove: () => void;
 }) {
   return (
-    <form
-      className="px-3 py-2 space-y-1.5 border-t border-zinc-800"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (draft.trim()) onSave();
-      }}
-    >
+    // Not a <form>: the settings bar sits in the composer's footer, inside the composer's form, and a form
+    // nested in a form submits natively (the whole page reloads, losing the key). Enter and Save call onSave.
+    <div className="px-3 py-2 space-y-1.5 border-t border-zinc-800">
       <div className="flex items-center gap-1.5 text-xs text-zinc-300">
         <KeyRound size={12} className="text-zinc-500" />
         <span className="flex-1">API key</span>
@@ -213,22 +215,29 @@ function KeyRow({
           autoComplete="off"
           value={draft}
           onChange={(e) => onDraft(e.target.value)}
+          onBlur={onDraftBlur}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && draft.trim()) {
+              e.preventDefault();
+              onSave();
+            }
+          }}
           placeholder={info.set ? "Paste a new key to replace it" : `Paste your ${provider} key`}
           className="flex-1 min-w-0 bg-zinc-800 text-zinc-200 text-xs rounded px-2 py-1.5 outline-none placeholder-zinc-500"
         />
-        <button type="submit" disabled={!draft.trim() || busy} className="px-2 text-xs rounded bg-zinc-700 text-zinc-200 disabled:opacity-40">
+        <button type="button" onClick={onSave} disabled={!draft.trim() || busy} className="px-2 text-xs rounded bg-zinc-700 text-zinc-200 disabled:opacity-40">
           {busy ? <Loader2 size={12} className="animate-spin" /> : "Save"}
         </button>
       </div>
       <p className={`text-[10px] ${msg ? (msg.ok ? "text-green-400" : "text-red-400") : "text-zinc-500"}`}>
-        {msg?.text ?? `Written to your .env as ${info.var} by Save, or by Save key & make default. Keys never come back to this page.`}
+        {msg?.text ?? `Written to your .env as ${info.var} when you leave this box (or press Save / Save key & make default). Keys never come back to this page.`}
         {!msg && info.set && info.in_file && (
-          <button type="button" onClick={onRemove} className="ml-1 underline hover:text-zinc-300">
+          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onRemove} className="ml-1 underline hover:text-zinc-300">
             Remove
           </button>
         )}
       </p>
-    </form>
+    </div>
   );
 }
 
@@ -242,6 +251,25 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [identityMsg, setIdentityMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const keyDraftRef = useRef("");
+  const keyBusyRef = useRef(false);
+  const keyInFlight = useRef<string | null>(null);
+  const saveKeyRef = useRef<(value: string) => Promise<boolean>>(async () => false);
+  const modelWasOpen = useRef(false);
+
+  useEffect(() => {
+    keyDraftRef.current = keyDraft;
+  }, [keyDraft]);
+
+  // Leaving the model menu without pressing Save must not throw a typed key away: it is a setting, like the
+  // model name (which is remembered as you type). Saved as soon as the menu closes.
+  useEffect(() => {
+    if (modelWasOpen.current && openDropdown !== "llm") {
+      const draft = keyDraftRef.current.trim();
+      if (draft && keyLooksValid(draft) && !keyBusyRef.current) void saveKeyRef.current(draft);
+    }
+    modelWasOpen.current = openDropdown === "llm";
+  }, [openDropdown]);
 
   useEffect(() => {
     if (openDropdown !== "llm") return;
@@ -258,8 +286,11 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
     return <span className="text-[11px] text-zinc-600 px-1">Connecting to veil…</span>;
   }
 
-  /** Save a provider key to .env ("" removes it). True when it was written. */
+  /** Save a provider key to .env ("" removes it). True when it was written (or is already being saved). */
   const saveKey = async (value: string): Promise<boolean> => {
+    if (keyBusyRef.current) return keyInFlight.current === value; // a blur and the Save button can both fire for one key
+    keyBusyRef.current = true;
+    keyInFlight.current = value;
     setKeyBusy(true);
     setKeyMsg(null);
     try {
@@ -276,8 +307,22 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
       setKeyMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
       return false;
     } finally {
+      keyBusyRef.current = false;
+      keyInFlight.current = null;
       setKeyBusy(false);
     }
+  };
+  saveKeyRef.current = saveKey;
+
+  /** Leaving the key box saves what was typed (the model name never needed a Save button). */
+  const saveKeyOnBlur = () => {
+    const draft = keyDraftRef.current.trim();
+    if (!draft) return;
+    if (!keyLooksValid(draft)) {
+      setKeyMsg({ ok: false, text: "That doesn't look like an API key (no spaces or quotes, 8-512 characters)." });
+      return;
+    }
+    if (!keyBusyRef.current) void saveKey(draft);
   };
 
   /** One button for the whole model setup: a key typed into the box above is saved too, not silently dropped. */
@@ -311,6 +356,12 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
 
   const identities = Array.from(new Set([...config.identities, ...(settings.identity ? [settings.identity] : [])]));
   const identityOk = /^[A-Za-z0-9_.-]{1,64}$/.test(newIdentity);
+  const useNewIdentity = () => {
+    if (!identityOk) return;
+    update({ identity: newIdentity });
+    setNewIdentity("");
+    close();
+  };
 
   return (
     <div className={`flex items-center gap-1 ${disabled ? "opacity-50 pointer-events-none" : ""}`}>
@@ -378,6 +429,7 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
             info={keys.keys[settings.provider]}
             draft={keyDraft}
             onDraft={setKeyDraft}
+            onDraftBlur={saveKeyOnBlur}
             busy={keyBusy}
             msg={keyMsg}
             onSave={() => void saveKey(keyDraft.trim())}
@@ -437,26 +489,24 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
         {identityMsg && (
           <p className={`px-3 py-1 text-[10px] ${identityMsg.ok ? "text-green-400" : "text-red-400"}`}>{identityMsg.text}</p>
         )}
-        <form
-          className="p-2 border-t border-zinc-800 flex gap-1"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!identityOk) return;
-            update({ identity: newIdentity });
-            setNewIdentity("");
-            close();
-          }}
-        >
+        {/* Not a <form>: nested in the composer's form it would submit and reload the page (see KeyRow). */}
+        <div className="p-2 border-t border-zinc-800 flex gap-1">
           <input
             value={newIdentity}
             onChange={(e) => setNewIdentity(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && identityOk) {
+                e.preventDefault();
+                useNewIdentity();
+              }
+            }}
             placeholder="New sticky identity…"
             className="flex-1 min-w-0 bg-zinc-800 text-zinc-200 text-xs rounded px-2 py-1.5 outline-none placeholder-zinc-500"
           />
-          <button type="submit" disabled={!identityOk} className="px-2 text-xs rounded bg-zinc-700 text-zinc-200 disabled:opacity-40">
+          <button type="button" onClick={useNewIdentity} disabled={!identityOk} className="px-2 text-xs rounded bg-zinc-700 text-zinc-200 disabled:opacity-40">
             Use
           </button>
-        </form>
+        </div>
       </IconDropdown>
 
       {/* Network */}
