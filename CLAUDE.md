@@ -31,6 +31,16 @@ is the running log of limits and site defences (add a dated entry when a run tea
 - **Proxies:** there's no provider yet. The plan is the user's own phone as a free mobile proxy first, then DataImpulse
   ($1/GB, gateway `http://LOGIN__cr.us;sessid.{session}:PASS@gw.dataimpulse.com:823`). Chromium
   can't authenticate SOCKS proxies: use HTTP. browser-use answers HTTP proxy auth over CDP (Fetch domain).
+- **Human checks are handled behind the agent (guardrail bypass by design).** `agent.py` gives every attempt an
+  `AutoPilot` (`autopilot.py`): emailed one-time codes/links are read from the person's own mailbox over IMAP
+  (`mailbox.py`; profiles.csv `mailbox_password`/`mailbox_imap`, app passwords; Gmail/Yahoo/Outlook/iCloud hosts detected
+  from the address), and CAPTCHA/bot-verification widgets are solved through a token service (`captcha.py`: 2captcha or
+  CapSolver, `VEIL_CAPTCHA_*`). The agent is never told: its task text stays a plain sign-up, `get_verification_code` /
+  `request_human_help` return neutral results, and only the person watching sees `on_notice` events. The person is asked
+  when a code never arrives, no solver is configured, or solving fails. SMS codes are deliberately not automated yet.
+  Limits learned from the module work: Outlook/Hotmail personal accounts usually block basic-auth IMAP (OAuth only), so
+  their codes fall back to the person; GeeTest has no token to replay (`autopilot` refuses before paying); a Cloudflare
+  managed challenge without a detectable Turnstile widget cannot be solved. Never log codes or mailbox credentials.
 
 ## Layout
 
@@ -42,6 +52,9 @@ src/veil/
   proxy.py      Proxy.parse, ProxyPool (cooldowns), GatewayProxy ({session} sticky token)
   geo.py        exit-IP lookup (ipinfo, ip-api fallback) -> timezone, languages
   detection.py  classify(url, title, html) -> BlockSignal (Cloudflare/Akamai/PX/DataDome/Imperva/Google)
+  mailbox.py    IMAP reader for the person's own mailbox: provider host from the email, code/link extraction (email OTPs)
+  captcha.py    CAPTCHA/bot-check widgets: detect from page HTML, solve via 2captcha/CapSolver, injection JS
+  autopilot.py  the in-between: tries mailbox codes + CAPTCHA tokens before the agent's human request reaches the person
   agent.py      run_task: Agent + on_step_end block guard; rotates identity and retries on a block
   check.py      `veil check`: compares the page-visible fingerprint with the persona
   accounts.py   `veil signup` / `veil accounts`: the user's own profiles.csv -> domain-scoped sensitive_data placeholders;
@@ -57,7 +70,7 @@ src/veil/
   webui/        `veil ui`: server.py = FastAPI API + the chat app (web/out); live.py = interactive live view (2nd CDP
                 connection: screencast out, Input.* in); runner.py = UI-agnostic run state, events, take_over/hand_back
                 (RunHooks into agent.run_task) and SessionHub (sessions: 'main' + one per split-off job, a browser gate of
-                VEIL_MAX_PARALLEL, one shared proxy source); admin.py = /api/keys, /api/llm/default, /api/proxies*;
+                VEIL_MAX_PARALLEL, one shared proxy source); admin.py = /api/keys, /api/llm/default, /api/captcha, /api/proxies*;
                 manager.py = UI values -> Settings. The Gradio panel was removed 2026-10-09.
 web/            Next.js static export adapted from browser-use/chat-ui-example (MIT); Browser Use Cloud SDK removed,
                 talks only to the local API. `npm run build` -> web/out, served by `veil ui`.

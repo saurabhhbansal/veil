@@ -1,6 +1,6 @@
 // The local veil server (`uv run veil ui`). In the built app it's the same origin; under `npm run dev`
 // (port 3000) it's `veil ui --dev` on 7788 unless NEXT_PUBLIC_VEIL_API says otherwise.
-import type { AccountsState, KeysState, ProfileDraft, ProxiesState, RunDetail, RunSummary, Snapshot, VeilConfig } from "./types";
+import type { AccountsState, CaptchaState, KeysState, ProfileDraft, ProxiesState, RunDetail, RunSummary, Snapshot, VeilConfig } from "./types";
 
 export function apiBase(): string {
   if (process.env.NEXT_PUBLIC_VEIL_API) return process.env.NEXT_PUBLIC_VEIL_API.replace(/\/$/, "");
@@ -60,7 +60,8 @@ export const api = {
   deleteRun: (id: string) => call<{ ok: boolean }>(`/api/runs/${enc(id)}/delete`, {}),
 
   accounts: () => call<AccountsState>("/api/accounts"),
-  saveProfiles: (profiles: Omit<ProfileDraft, "key" | "has_password">[]) => call<AccountsState>("/api/accounts/profiles", { profiles }),
+  saveProfiles: (profiles: Omit<ProfileDraft, "key" | "has_password" | "has_mailbox_password">[]) =>
+    call<AccountsState>("/api/accounts/profiles", { profiles }),
   deleteSignup: (site: string, profileId: string) =>
     call<AccountsState>("/api/accounts/signups/delete", { site, profile_id: profileId }),
   reveal: (site: string, profileId: string) =>
@@ -75,6 +76,10 @@ export const api = {
   keys: () => call<KeysState>("/api/keys"),
   saveKey: (provider: string, key: string) => call<KeysState>("/api/keys", { provider, key }),
   saveLlmDefault: (provider: string, model: string, effort: string) => call<KeysState>("/api/llm/default", { provider, model, effort }),
+
+  captcha: () => call<CaptchaState>("/api/captcha"),
+  saveCaptcha: (provider: string, key?: string) =>
+    call<CaptchaState>("/api/captcha", key === undefined ? { provider } : { provider, key }),
 
   proxies: () => call<ProxiesState>("/api/proxies"),
   addProxies: (text: string) => call<ProxiesState>("/api/proxies/add", { text }),

@@ -10,6 +10,7 @@ from typing import Any
 
 from browser_use import ActionResult, Agent, Tools
 
+from veil.autopilot import AutoPilot
 from veil.config import Settings
 from veil.detection import BlockSignal, classify, find_captcha
 from veil.llm import build_llm
@@ -63,6 +64,9 @@ class RunHooks:
 	on_step_start: Callable[[Agent], Awaitable[None] | None] | None = None
 	# take_followups() -> instructions that arrived too late for a step; the same agent continues with them.
 	take_followups: Callable[[], list[str]] | None = None
+	# on_notice(level, text) reports what veil did behind the agent's back (solved a CAPTCHA, read an emailed code):
+	# the person watching sees it in the app; the agent never does.
+	on_notice: Callable[[str, str], Awaitable[None] | None] | None = None
 
 
 async def _call(fn, *args) -> None:
@@ -84,9 +88,10 @@ class _BlockGuard:
 	the page is still a challenge after they had a go does the guard rotate the identity.
 	"""
 
-	def __init__(self, session: StealthSession, request_human=None):
+	def __init__(self, session: StealthSession, request_human=None, autopilot: AutoPilot | None = None):
 		self.session = session
 		self.request_human = request_human
+		self.autopilot = autopilot
 		self.signal: BlockSignal | None = None
 		self.handed_over: set[tuple[str, str]] = set()  # (vendor, page) the person already had a go at
 
@@ -105,13 +110,16 @@ class _BlockGuard:
 					break
 		if not page:
 			return
-		captcha = find_captcha(page['html']) if self.request_human else None
+		captcha = find_captcha(page['html']) if (self.request_human or self.autopilot) else None
 		# A hard block (Cloudflare 1020, Akamai) has nothing to solve, unless it carries a CAPTCHA (Google /sorry/).
 		human = captcha if captcha else (signal if signal and signal.kind == 'challenge' else None)
 		finished = getattr(agent, 'history', None) is not None and agent.history.is_done()
-		if human and self.request_human and not finished:  # a finished agent has nothing left to do on the page
+		if human and not finished:  # a finished agent has nothing left to do on the page
 			key = _page_key(human.vendor, page['url'])
-			if key not in self.handed_over:
+			# Invisible first: a solver token put into the page, or a code read from the account's mailbox.
+			if self.autopilot and await self.autopilot.try_page(page, signal):
+				return  # the agent carries on; it is never told what happened
+			if self.request_human and key not in self.handed_over:
 				self.handed_over.add(key)
 				log.info('%s %s on %s: asking the person to solve it', human.vendor, human.kind, page['url'])
 				await _call(
@@ -126,9 +134,10 @@ class _BlockGuard:
 			agent.stop()
 
 
-def _tools(request_human=None, fetch_code=None) -> Tools:
+def _tools(request_human=None, fetch_code=None, autopilot: AutoPilot | None = None) -> Tools:
 	"""browser-use's default actions, plus one to hand the browser to the person watching and/or ones to read
-	a one-time code or an email confirmation link from the identity server."""
+	a one-time code or an email confirmation link (the autopilot reads it from the account's own mailbox, but
+	the agent only sees a neutral tool)."""
 	tools = Tools()
 
 	if request_human:
@@ -139,6 +148,12 @@ def _tools(request_human=None, fetch_code=None) -> Tools:
 			'The run pauses until they finish. Do not use it for anything you can do yourself.'
 		)
 		async def request_human_help(reason: str) -> ActionResult:
+			# Veil first tries the invisible route (solver token, code from the account's mailbox): if it works the
+			# agent just gets the outcome, so its request never has to mention mail or CAPTCHA services.
+			if autopilot is not None:
+				handled = await autopilot.help(reason, {'source': 'agent'})
+				if handled:
+					return ActionResult(extracted_content=handled, long_term_memory=handled)
 			await _call(request_human, reason, {'source': 'agent'})
 			msg = f'Asked the human operator for help: {reason}. They take over the browser before your next step.'
 			return ActionResult(extracted_content=msg, long_term_memory=msg)
@@ -215,10 +230,19 @@ async def run_task(
 				attempt.proxy = session.proxy.redacted if session.proxy else None
 				attempt.exit_ip = session.exit.ip if session.exit else None
 				attempt.persona = session.persona.summary() if session.persona else None
-				guard = _BlockGuard(session, hooks.request_human)
+				# The invisible in-between: emailed codes and CAPTCHA tokens are handled here, not by the agent.
+				autopilot = AutoPilot(session, settings, fetch_code=fetch_code, notify=hooks.on_notice)
+
+				async def notified_code(channel: str) -> str | None:
+					code = await fetch_code(channel)  # type: ignore[misc]
+					if code:
+						await _call(hooks.on_notice, 'info', f'Read the {channel} verification code automatically.')
+					return code
+
+				guard = _BlockGuard(session, hooks.request_human, autopilot=autopilot)
 				kwargs = dict(agent_kwargs or {})
 				if (hooks.request_human or fetch_code) and 'tools' not in kwargs:
-					kwargs['tools'] = _tools(hooks.request_human, fetch_code)
+					kwargs['tools'] = _tools(hooks.request_human, notified_code if fetch_code else None, autopilot)
 				agent = Agent(task=task, llm=llm, browser_session=session.browser, register_new_step_callback=hooks.on_step, **kwargs)
 				await _call(hooks.on_attempt, n, attempts_allowed, session, agent)
 

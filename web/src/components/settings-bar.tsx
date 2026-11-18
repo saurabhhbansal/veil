@@ -3,10 +3,10 @@
 // Adapted from chat-ui-example's model-selector.tsx (IconDropdown / DropdownRow). The Browser Use Cloud
 // pickers (BU models, cloud profiles, workspaces, proxy countries) are replaced by veil's run settings.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Cpu, Fingerprint, Globe, KeyRound, Loader2, Scale, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Check, Cpu, Fingerprint, Globe, KeyRound, Loader2, Scale, ShieldCheck, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useSettings } from "@/context/settings-context";
 import { api } from "@/lib/api";
-import type { KeyInfo, KeysState } from "@/lib/types";
+import type { CaptchaState, KeyInfo, KeysState } from "@/lib/types";
 
 interface IconDropdownProps {
   icon: ReactNode;
@@ -251,6 +251,10 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [identityMsg, setIdentityMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [captcha, setCaptcha] = useState<CaptchaState | null>(null);
+  const [captchaKey, setCaptchaKey] = useState("");
+  const [captchaBusy, setCaptchaBusy] = useState(false);
+  const [captchaMsg, setCaptchaMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const keyDraftRef = useRef("");
   const keyBusyRef = useRef(false);
   const keyInFlight = useRef<string | null>(null);
@@ -272,11 +276,17 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
   }, [openDropdown]);
 
   useEffect(() => {
-    if (openDropdown !== "llm") return;
-    setDefaultMsg(null);
-    setKeyDraft("");
-    setKeyMsg(null);
-    api.keys().then(setKeys).catch(() => setKeys(null));
+    if (openDropdown === "llm") {
+      setDefaultMsg(null);
+      setKeyDraft("");
+      setKeyMsg(null);
+      api.keys().then(setKeys).catch(() => setKeys(null));
+      return;
+    }
+    if (openDropdown !== "captcha") return;
+    setCaptchaKey("");
+    setCaptchaMsg(null);
+    api.captcha().then(setCaptcha).catch(() => setCaptcha(null));
   }, [openDropdown]);
 
   const toggle = useCallback((name: string) => setOpenDropdown((prev) => (prev === name ? null : name)), []);
@@ -353,6 +363,25 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
       setIdentityMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
     }
   };
+
+  const saveCaptcha = async (provider: string, key?: string) => {
+    setCaptchaBusy(true);
+    setCaptchaMsg(null);
+    try {
+      const st = await api.saveCaptcha(provider, key);
+      setCaptcha(st);
+      setCaptchaKey("");
+      await refreshConfig();
+      setCaptchaMsg({ ok: true, text: provider ? `${provider} is on: CAPTCHAs are solved automatically.` : "CAPTCHA solving off: CAPTCHAs come to you." });
+    } catch (e) {
+      setCaptchaMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setCaptchaBusy(false);
+    }
+  };
+
+  const captchaProvider = captcha?.provider ?? config.captcha.provider;
+  const captchaHasKey = captcha?.has_key ?? config.captcha.has_key;
 
   const identities = Array.from(new Set([...config.identities, ...(settings.identity ? [settings.identity] : [])]));
   const identityOk = /^[A-Za-z0-9_.-]{1,64}$/.test(newIdentity);
@@ -507,6 +536,54 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
             Use
           </button>
         </div>
+      </IconDropdown>
+
+      {/* Human checks: CAPTCHA solving, invisible to the agent */}
+      <IconDropdown
+        icon={<ShieldCheck size={16} />}
+        title={captchaProvider ? `Human checks: solving via ${captchaProvider}` : "Human checks: ask me"}
+        activeColor={captchaProvider ? "green" : "purple"}
+        isActive={!!captchaProvider}
+        open={openDropdown === "captcha"}
+        onToggle={() => toggle("captcha")}
+        onClose={close}
+        width="w-[300px]"
+      >
+        <p className="px-3 pt-1.5 text-[10px] text-zinc-500">
+          CAPTCHAs and bot checks are solved in the background; the agent is never told. Without a solver they pause for you.
+        </p>
+        <DropdownRow label="Ask me (off)" hint="CAPTCHAs and challenges come to you" selected={!captchaProvider} onSelect={() => void saveCaptcha("")} />
+        {(captcha?.providers ?? ["2captcha", "capsolver"]).map((p) => (
+          <DropdownRow key={p} label={p} hint="solves CAPTCHAs through its API" selected={captchaProvider === p} onSelect={() => void saveCaptcha(p)} />
+        ))}
+        {captchaProvider && (
+          <>
+            <div className="px-3 pt-1.5 text-[10px] text-zinc-500">
+              API key {captchaHasKey ? `set ${captcha?.masked ?? ""}` : "not set"}
+            </div>
+            <div className="px-3 pb-1 flex gap-1">
+              <input
+                type="password"
+                autoComplete="off"
+                value={captchaKey}
+                onChange={(e) => setCaptchaKey(e.target.value)}
+                placeholder={`Paste your ${captchaProvider} key`}
+                className="flex-1 min-w-0 bg-zinc-800 text-zinc-200 text-xs rounded px-2 py-1.5 outline-none placeholder-zinc-500"
+              />
+              <button
+                type="button"
+                disabled={!captchaKey.trim() || captchaBusy}
+                onClick={() => void saveCaptcha(captchaProvider, captchaKey.trim())}
+                className="px-2 text-xs rounded bg-zinc-700 text-zinc-200 disabled:opacity-40"
+              >
+                {captchaBusy ? <Loader2 size={12} className="animate-spin" /> : "Save"}
+              </button>
+            </div>
+            <p className={`px-3 pb-2 text-[10px] ${captchaMsg ? (captchaMsg.ok ? "text-green-400" : "text-red-400") : "text-zinc-500"}`}>
+              {captchaMsg?.text ?? "Saved to .env. Keys never come back to this page."}
+            </p>
+          </>
+        )}
       </IconDropdown>
 
       {/* Network */}

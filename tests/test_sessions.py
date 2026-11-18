@@ -117,7 +117,8 @@ async def test_keys_and_proxies_are_saved_to_env_without_coming_back_out(tmp_pat
 	from veil.proxy import read_list
 	from veil.webui import admin
 
-	for var in ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VEIL_PROXY_FILE', 'VEIL_PROXY_GATEWAY', 'VEIL_PROXY_MODE', 'VEIL_PROXY_STRATEGY', 'VEIL_LLM_EFFORT'):
+	for var in ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VEIL_PROXY_FILE', 'VEIL_PROXY_GATEWAY', 'VEIL_PROXY_MODE', 'VEIL_PROXY_STRATEGY', 'VEIL_LLM_EFFORT',
+	            'VEIL_CAPTCHA_PROVIDER', 'VEIL_CAPTCHA_API_KEY'):
 		monkeypatch.delenv(var, raising=False)
 	for var in ('VEIL_LLM_PROVIDER', 'VEIL_LLM_MODEL'):
 		monkeypatch.setenv(var, 'x')  # restored afterwards; the endpoints overwrite them
@@ -143,6 +144,14 @@ async def test_keys_and_proxies_are_saved_to_env_without_coming_back_out(tmp_pat
 		# A non-default provider's key goes under its own variable: the model menu's "Save key & make default".
 		k = (await c.post('/api/keys', json={'provider': 'deepseek', 'key': 'sk-ds-key-9012'})).json()['keys']['deepseek']
 		assert k['set'] and k['source'] == 'DEEPSEEK_API_KEY' and dotenv_values(env_file)['DEEPSEEK_API_KEY'] == 'sk-ds-key-9012'
+		# CAPTCHA solving: provider + key saved to .env, key never returned
+		cap = (await c.post('/api/captcha', json={'provider': '2captcha', 'key': 'captcha-key-5678'})).json()
+		assert cap['provider'] == '2captcha' and cap['has_key'] and cap['masked'] == '••••5678'
+		assert 'captcha-key' not in json.dumps(cap) and dotenv_values(env_file)['VEIL_CAPTCHA_API_KEY'] == 'captcha-key-5678'
+		cap = (await c.post('/api/captcha', json={'provider': ''})).json()
+		assert cap['provider'] is None and cap['has_key']  # the key is kept for when solving is switched back on
+		assert dotenv_values(env_file).get('VEIL_CAPTCHA_PROVIDER') is None
+		assert (await c.post('/api/captcha', json={'provider': 'nosuch', 'key': 'x'})).status_code == 400
 		# a new default provider: the old VEIL_LLM_API_KEY is not sent to it
 		await c.post('/api/llm/default', json={'provider': 'anthropic', 'model': 'claude-opus-5-5', 'effort': 'high'})
 		assert (env.llm_provider, env.llm_model, env.llm_effort, env.llm_api_key) == ('anthropic', 'claude-opus-5-5', 'high', None)
@@ -152,6 +161,7 @@ async def test_keys_and_proxies_are_saved_to_env_without_coming_back_out(tmp_pat
 		assert cfg['keys']['openai'] and cfg['keys']['deepseek'] and not cfg['keys']['anthropic'] and cfg['efforts']['anthropic'][-1] == 'max'
 		assert cfg['efforts']['deepseek'] == ['low', 'high', 'max'] and cfg['models']['deepseek'] == ['deepseek-flash', 'deepseek-v4-pro']
 		assert 'engine' not in cfg and 'engines' not in cfg  # the app always runs Fortress; no engine picker
+		assert cfg['captcha'] == {'provider': None, 'has_key': True, 'timeout': 120.0} and cfg['mailbox_wait'] == 90.0
 
 		r = (await c.post('/api/proxies/add', json={'text': 'gw.test:823:user:pa:ss\nsocks5://u:p@h.test:1080\n\nhttp://dead.test:80'})).json()
 		assert r['mode'] == 'list' and len(r['proxies']) == 2 and len(r['errors']) == 1  # SOCKS with a password can't work in Chromium
@@ -168,7 +178,7 @@ async def test_keys_and_proxies_are_saved_to_env_without_coming_back_out(tmp_pat
 		r = (await c.post('/api/proxies/remove', json={'ids': [p['id'] for p in r['proxies']]})).json()
 		assert r['proxies'] == []
 	assert os.environ['VEIL_PROXY_MODE'] == 'direct'
-	for var in ('VEIL_PROXY_MODE', 'VEIL_PROXY_GATEWAY', 'VEIL_PROXY_FILE', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'VEIL_LLM_EFFORT'):
+	for var in ('VEIL_PROXY_MODE', 'VEIL_PROXY_GATEWAY', 'VEIL_PROXY_FILE', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'VEIL_LLM_EFFORT', 'VEIL_CAPTCHA_PROVIDER', 'VEIL_CAPTCHA_API_KEY'):
 		os.environ.pop(var, None)  # written by the endpoints, not by monkeypatch
 
 

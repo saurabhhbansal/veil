@@ -42,7 +42,7 @@ def _fakes(monkeypatch, history_for_attempt, blocked_attempts=()):
 			pass
 
 	class FakeGuard:
-		def __init__(self, session, request_human=None):
+		def __init__(self, session, request_human=None, autopilot=None):
 			n = len(launched)
 			self.signal = BlockSignal('cloudflare', 'block', 'title') if n in blocked_attempts else None
 

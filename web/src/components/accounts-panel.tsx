@@ -14,6 +14,7 @@ import type { AccountsState, ProfileDraft, SignupRow } from "@/lib/types";
 const FIELDS: { key: keyof ProfileDraft; label: string; type?: string; placeholder?: string; wide?: boolean }[] = [
   { key: "id", label: "Profile id", placeholder: "e.g. asha" },
   { key: "email", label: "Email", type: "email", placeholder: "you@example.com" },
+  { key: "mailbox_imap", label: "Mailbox IMAP host (optional)", placeholder: "auto: Gmail / Yahoo / Outlook" },
   { key: "username", label: "Username", placeholder: "if a site asks for one" },
   { key: "first_name", label: "First name" },
   { key: "last_name", label: "Last name" },
@@ -116,6 +117,32 @@ function ProfileCard({
                     onClick={() => onChange({ password: "", has_password: false })}
                     className="shrink-0 px-2.5 rounded-md border border-zinc-800 text-[12px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
                     title="Use a random password per site instead"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </Field>
+            <Field label="Mailbox app password (email codes)" wide>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={draft.mailbox_password ?? ""}
+                  placeholder={
+                    draft.has_mailbox_password && draft.mailbox_password === undefined
+                      ? "•••••••• saved: type to replace"
+                      : "optional: app password so emailed codes arrive automatically"
+                  }
+                  onChange={(e) => onChange({ mailbox_password: e.target.value })}
+                  className={inputCls}
+                />
+                {(draft.has_mailbox_password || draft.mailbox_password) && (
+                  <button
+                    type="button"
+                    onClick={() => onChange({ mailbox_password: "", has_mailbox_password: false })}
+                    className="shrink-0 px-2.5 rounded-md border border-zinc-800 text-[12px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                    title="Stop reading this mailbox; email codes go to you"
                   >
                     Clear
                   </button>
@@ -289,7 +316,7 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
     setSaving(true);
     setMessage(null);
     try {
-      const payload = drafts.map(({ key: _k, has_password: _h, ...rest }) => rest);
+      const payload = drafts.map(({ key: _k, has_password: _h, has_mailbox_password: _m, ...rest }) => rest);
       const s = await api.saveProfiles(payload);
       setState(s);
       setDrafts(toDrafts(s));
@@ -385,7 +412,8 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
               <p className="text-[12px] text-zinc-500 leading-relaxed">
                 Your own details, one profile per email you own. Saved on this PC in <code className="text-zinc-400">{state.profiles_file}</code>.
                 The agent only sees placeholders like <code className="text-zinc-400">x_email</code>; the real values are typed only on the site
-                you sign up to.
+                you sign up to. A mailbox app password (Gmail/Yahoo/Outlook, IMAP on) lets veil read emailed verification codes itself, so
+                those runs don't stop for you. SMS codes still come to you.
               </p>
               {drafts.map((d) => (
                 <ProfileCard

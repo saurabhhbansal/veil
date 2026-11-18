@@ -173,6 +173,8 @@ export interface VeilConfig {
   models: Record<string, string[]>; // provider -> suggested model names
   max_parallel: number;
   headless: boolean;
+  captcha: { provider: string | null; has_key: boolean; timeout: number }; // CAPTCHA/bot-check solver
+  mailbox_wait: number; // seconds to wait for an emailed one-time code
   geo_match: boolean;
   max_attempts: number;
   max_steps: number;
@@ -243,6 +245,8 @@ export interface AccountProfile {
   postcode?: string;
   country?: string;
   has_password: boolean;
+  mailbox_imap?: string; // optional override, e.g. imap.gmail.com
+  has_mailbox_password?: boolean; // an app password is saved for reading emailed codes
 }
 
 export interface SignupRow {
@@ -272,6 +276,7 @@ export interface AccountsState {
 export type ProfileDraft = Omit<AccountProfile, "has_password"> & {
   original_id?: string;
   password?: string;
+  mailbox_password?: string; // same rule as `password`
   has_password?: boolean;
   key: string;
 };
@@ -289,6 +294,16 @@ export interface KeyInfo {
 export interface KeysState {
   env_file: string;
   keys: Record<string, KeyInfo>;
+}
+
+/** CAPTCHA/bot-check solving settings (GET/POST /api/captcha). The key goes in, only masked values come out. */
+export interface CaptchaState {
+  provider: string | null;
+  has_key: boolean;
+  masked: string | null;
+  providers: string[];
+  timeout: number;
+  env_file: string;
 }
 
 export interface ProxyTest {

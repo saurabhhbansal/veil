@@ -11,6 +11,7 @@ seeing the same device from the same place.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -209,3 +210,29 @@ async def evaluate_isolated(browser: BrowserSession, expression: str) -> object:
 	if 'exceptionDetails' in res:
 		raise RuntimeError(res['exceptionDetails'].get('text', 'evaluation failed'))
 	return res['result'].get('value')
+
+
+async def evaluate_page(browser: BrowserSession, expression: str) -> object:
+	"""Evaluate JS in the page's own (main) world.
+
+	Only for things that must reach page globals, like a CAPTCHA widget's callback: the isolated world shares the
+	DOM but not the page's JS objects. Runtime.evaluate alone sends no enable/attach events, so it adds no tell.
+	"""
+	cdp = await browser.get_or_create_cdp_session()
+	res = await cdp.cdp_client.send.Runtime.evaluate(
+		params={'expression': expression, 'returnByValue': True, 'awaitPromise': True},
+		session_id=cdp.session_id,
+	)
+	if 'exceptionDetails' in res:
+		raise RuntimeError(res['exceptionDetails'].get('text', 'evaluation failed'))
+	return res['result'].get('value')
+
+
+async def capture_region(browser: BrowserSession, x: float, y: float, width: float, height: float) -> bytes:
+	"""A PNG of one rectangle of the focused page (used to send an image CAPTCHA to a solver)."""
+	cdp = await browser.get_or_create_cdp_session()
+	res = await cdp.cdp_client.send.Page.captureScreenshot(
+		params={'format': 'png', 'clip': {'x': x, 'y': y, 'width': width, 'height': height, 'scale': 1}},
+		session_id=cdp.session_id,
+	)
+	return base64.b64decode(res['data'])

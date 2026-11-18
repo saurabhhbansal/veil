@@ -62,6 +62,13 @@ class Settings:
 	identity_api_timeout: float = 15.0
 	identity_api_send_passwords: bool = False  # include the password veil used when reporting a run's outcome
 
+	# Automatic handling of the human checks a sign-up hits: emailed one-time codes and CAPTCHAs.
+	mailbox_wait: float = 90.0  # how long to poll the person's mailbox for an emailed code before falling back to them
+	captcha_provider: str | None = None  # 2captcha | capsolver (None = CAPTCHA solving off; the person is asked)
+	captcha_api_key: str | None = None
+	captcha_timeout: float = 120.0  # how long a solver may take for one CAPTCHA
+	captcha_max_solves: int = 2  # CAPTCHAs one run may pay to solve on the same page before asking the person
+
 	@property
 	def accounts_dir(self) -> Path:
 		return self.data_dir / 'accounts'
@@ -112,4 +119,9 @@ class Settings:
 		s.identity_api_token = _opt('VEIL_IDENTITY_API_TOKEN')
 		s.identity_api_timeout = _float('VEIL_IDENTITY_API_TIMEOUT') or s.identity_api_timeout
 		s.identity_api_send_passwords = _bool('VEIL_IDENTITY_API_SEND_PASSWORDS', s.identity_api_send_passwords)
+		s.mailbox_wait = _float('VEIL_MAILBOX_WAIT') or s.mailbox_wait
+		s.captcha_provider = (_opt('VEIL_CAPTCHA_PROVIDER') or '').lower() or None
+		s.captcha_api_key = _opt('VEIL_CAPTCHA_API_KEY')
+		s.captcha_timeout = _float('VEIL_CAPTCHA_TIMEOUT') or s.captcha_timeout
+		s.captcha_max_solves = max(0, int(_opt('VEIL_CAPTCHA_MAX_SOLVES') or s.captcha_max_solves))
 		return s

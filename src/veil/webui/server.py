@@ -144,6 +144,8 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 			'headless': env.headless,
 			'geo_match': env.geo_match, 'max_attempts': env.max_attempts, 'max_steps': env.max_steps, 'max_parallel': hub.max_parallel,
 			'identities': saved_identities(env), 'platforms': accounts.platforms(known), 'max_bulk': env.max_bulk,
+			'captcha': {'provider': env.captcha_provider, 'has_key': bool(env.captcha_api_key), 'timeout': env.captcha_timeout},
+			'mailbox_wait': env.mailbox_wait,
 			'proxy': 'gateway' if env.proxy_gateway else 'list' if env.proxy_file else None,
 			'proxy_detail': str(env.proxy_file) if env.proxy_file and not env.proxy_gateway else None,
 		}
@@ -492,7 +494,14 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		return {
 			'profiles_file': str(profiles_file), 'signups_file': str(signups_file), 'error': error, 'identity_api': env.identity_api,
 			'columns': accounts.PROFILE_COLUMNS, 'statuses': accounts.STATUSES, 'done_statuses': accounts.DONE_STATUSES,
-			'profiles': [{**{k: v for k, v in p.items() if k != 'password'}, 'has_password': bool(p.get('password'))} for p in profiles],
+			'profiles': [
+				{
+					**{k: v for k, v in p.items() if k not in accounts.SECRET_COLUMNS},
+					'has_password': bool(p.get('password')),
+					'has_mailbox_password': bool(p.get('mailbox_password')),
+				}
+				for p in profiles
+			],
 			'signups': [{**{k: v for k, v in asdict(x).items() if k != 'password'}, 'has_password': bool(x.password)} for x in signups],
 		}
 
@@ -506,11 +515,10 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		saved = {p['id']: p for p in read_profiles()[0]}
 		merged = []
 		for r in rows:
-			row = {c: str(r.get(c) or '') for c in accounts.PROFILE_COLUMNS if c != 'password'}
-			if r.get('password') is not None:
-				row['password'] = str(r['password'])
-			else:  # never sent to the page, so not sent back: keep what's saved (under the id it had before an edit)
-				row['password'] = saved.get(str(r.get('original_id') or row['id']), {}).get('password', '')
+			row = {c: str(r.get(c) or '') for c in accounts.PROFILE_COLUMNS if c not in accounts.SECRET_COLUMNS}
+			original = saved.get(str(r.get('original_id') or row['id'])) or saved.get(row['id'], {})  # after a rename, the id may be the old one
+			for secret in accounts.SECRET_COLUMNS:  # secrets never come to the page, so not sent back: keep the saved ones
+				row[secret] = str(r[secret]) if r.get(secret) is not None else original.get(secret, '')
 			merged.append(row)
 		try:
 			accounts.save_profiles(profiles_file, merged)
@@ -588,7 +596,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 			profiles, error = await asyncio.to_thread(read_profiles)
 			if not profiles:
 				raise HTTPException(400, error or 'To create accounts, add a profile under Accounts (top right) first.')
-			source = identities.LocalProfiles(profiles)
+			source = identities.LocalProfiles(profiles, mailbox_wait=env.mailbox_wait)
 		log_ = accounts.SignupLog(signups_file)
 		try:
 			# Who signs up as whom: people without an account there yet, one per account (off the event loop:

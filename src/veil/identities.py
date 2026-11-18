@@ -69,9 +69,10 @@ class LocalProfiles:
 
 	remote = False
 
-	def __init__(self, profiles: list[dict[str, str]]):
+	def __init__(self, profiles: list[dict[str, str]], *, mailbox_wait: float = 90.0):
 		self.profiles = profiles
 		self.by_id = {p['id']: p for p in profiles}
+		self.mailbox_wait = mailbox_wait
 
 	def get(self, profile_id: str) -> dict[str, str]:
 		if profile_id not in self.by_id:
@@ -95,7 +96,30 @@ class LocalProfiles:
 		pass  # signups.csv is the record
 
 	def code_fetcher(self, profile_id: str, site: str) -> Callable[[str], Awaitable[str | None]] | None:
-		return None  # codes go to the person, who types them in (request_human_help)
+		"""Emailed one-time codes and confirmation links, read from the person's own mailbox over IMAP when the
+		profile has a mailbox app password (accounts.py: mailbox_password / mailbox_imap). SMS codes still go to
+		the person. The agent only sees the neutral get_verification_code/get_verification_link tools."""
+		profile = self.by_id.get(profile_id)
+		if not profile or not profile.get('mailbox_password'):
+			return None
+		from veil import mailbox  # imported here so a profiles.csv without mailbox codes never loads IMAP code
+
+		box = mailbox.mailbox_for(profile.get('email', ''), profile.get('mailbox_imap') or None)
+		if not box:
+			return None
+		reader = mailbox.MailReader(box, profile['email'], profile['mailbox_password'], timeout=self.mailbox_wait)
+		since = time.time() - 60  # the site may have sent the code just before this run started
+
+		async def fetch(channel: str) -> str | None:
+			if channel == 'link':
+				lookup = lambda: reader.link(site, since=since)  # noqa: E731
+			elif channel == 'email':
+				lookup = lambda: reader.code(site, since=since)  # noqa: E731
+			else:
+				return None  # SMS codes need the person for now
+			return await asyncio.to_thread(lookup)  # imaplib blocks: poll in a worker thread
+
+		return fetch
 
 
 class IdentityAPI:
@@ -279,4 +303,4 @@ def profile_source(settings: Settings, proxy_source: ProxySource | None = None) 
 			settings.identity_api, settings.identity_api_token, timeout=settings.identity_api_timeout,
 			country=settings.proxy_country, exit_countries=exit_countries(proxy_source), send_passwords=settings.identity_api_send_passwords,
 		)
-	return LocalProfiles(accounts.load_profiles(accounts.profiles_path(settings)))
+	return LocalProfiles(accounts.load_profiles(accounts.profiles_path(settings)), mailbox_wait=settings.mailbox_wait)

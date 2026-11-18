@@ -122,6 +122,41 @@ def test_report_and_codes():
 	assert identities.LocalProfiles([]).code_fetcher('p1', 'x') is None  # profiles.csv: codes go to the person
 
 
+def test_local_profiles_read_emailed_codes_from_the_mailbox(monkeypatch):
+	from veil import mailbox
+
+	seen = {}
+
+	class FakeReader:
+		def __init__(self, box, email, password, timeout=90):
+			seen.update(box=box, email=email, password=password, timeout=timeout)
+
+		def code(self, site, *, since):
+			return '482913' if site == 'shop.test' else None
+
+		def link(self, site, *, since):
+			return 'https://shop.test/verify?t=abc'
+
+	monkeypatch.setattr(mailbox, 'MailReader', FakeReader)
+	src = identities.LocalProfiles(
+		[
+			{'id': 'p1', 'email': 'me@gmail.com', 'mailbox_password': 'app-pass'},
+			{'id': 'p2', 'email': 'me@custom.test', 'mailbox_password': 'pw', 'mailbox_imap': 'imap.custom.test'},
+			{'id': 'p3', 'email': 'me@y.test'},  # no mailbox password: the person types the code
+		],
+		mailbox_wait=30,
+	)
+	assert src.code_fetcher('p3', 'shop.test') is None
+	fetch = src.code_fetcher('p1', 'shop.test')
+	assert fetch is not None
+	assert asyncio.run(fetch('email')) == '482913'
+	assert asyncio.run(fetch('link')) == 'https://shop.test/verify?t=abc'
+	assert asyncio.run(fetch('sms')) is None  # SMS codes are the person's job for now
+	assert seen == {'box': mailbox.mailbox_for('me@gmail.com'), 'email': 'me@gmail.com', 'password': 'app-pass', 'timeout': 30}
+	assert src.code_fetcher('p2', 'shop.test') is not None  # a custom IMAP host needs no provider guess
+	assert identities.LocalProfiles([{'id': 'p1', 'email': 'me@unknown.test', 'mailbox_password': 'pw'}]).code_fetcher('p1', 'x') is None
+
+
 def test_settings_pick_the_source(tmp_path):
 	assert isinstance(identities.profile_source(Settings(identity_api='http://ids.corp.test', proxy_country='de')), IdentityAPI)
 	A.save_profiles(tmp_path / 'p.csv', [{'id': 'p1', 'email': 'a@a.com'}])

@@ -135,6 +135,32 @@ def test_parse_status():
 	assert A.parse_status(None) == ('failed', 'no answer from the agent')
 
 
+def test_placeholders_never_expose_mailbox_credentials():
+	profile = {
+		'id': 'p1', 'email': 'me@gmail.com', 'first_name': 'Asha', 'password': 'site-pw',
+		'mailbox_password': 'app-pass-for-imap', 'mailbox_imap': 'imap.custom.test',
+	}
+	values = A.placeholders(profile, 'site-pw')
+	assert values['x_email'] == 'me@gmail.com' and values['x_password'] == 'site-pw'
+	assert 'x_mailbox_password' not in values and 'x_mailbox_imap' not in values
+	assert 'app-pass-for-imap' not in str(values) and 'imap.custom.test' not in str(values)
+	assert A.sensitive_data('shop.test', values) == {'https://*.shop.test': values}
+	assert 'mailbox_password' in A.PROFILE_COLUMNS and 'mailbox_imap' in A.PROFILE_COLUMNS
+
+
+def test_mailbox_columns_round_trip_and_the_agent_is_not_told_about_them(tmp_path):
+	path = tmp_path / 'p.csv'
+	A.save_profiles(path, [{'id': 'p1', 'email': 'me@gmail.com', 'mailbox_password': 'app-pass', 'mailbox_imap': 'imap.gmail.com'}])
+	profile = A.load_profiles(path)[0]
+	assert (profile['mailbox_password'], profile['mailbox_imap']) == ('app-pass', 'imap.gmail.com')
+	assert list(profile) == A.PROFILE_COLUMNS
+	# The agent's own task never mentions the mailbox or a solver: veil handles those behind its back.
+	task = A.build_task('https://x.test', {'x_email': 'e'}, ask_human=True, codes=True)
+	assert 'get_verification_code' in task and 'get_verification_link' in task
+	for word in ('mailbox', 'imap', 'gmail', 'yahoo', 'outlook', '2captcha', 'capsolver'):
+		assert word not in task.lower()
+
+
 def test_save_profiles_validates_and_round_trips(tmp_path):
 	path = tmp_path / 'acc' / 'profiles.csv'
 	assert A.load_profiles(path, allow_empty=True) == []

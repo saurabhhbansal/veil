@@ -33,7 +33,15 @@ if TYPE_CHECKING:
 
 log = logging.getLogger('veil.accounts')
 
-PROFILE_COLUMNS = ['id', 'email', 'username', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'address', 'city', 'state', 'postcode', 'country', 'password']
+PROFILE_COLUMNS = [
+	'id', 'email', 'username', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'address', 'city', 'state', 'postcode', 'country',
+	'password',
+	# optional: an app password + IMAP host so veil can read emailed one-time codes instead of asking the person
+	'mailbox_password', 'mailbox_imap',
+]
+# Secrets: never typeable by the agent and never sent back to the page.
+SECRET_COLUMNS = ('password', 'mailbox_password')
+_NOT_PLACEHOLDERS = ('id', 'mailbox_imap', *SECRET_COLUMNS)
 
 # signed_up: account exists and works. verify_email: form sent, the site mailed a confirmation link.
 # needs_human: stopped at something only the user can do (CAPTCHA, SMS code, a field with no value).
@@ -165,8 +173,9 @@ def _parse_dob(value: str, where: str = 'dob') -> date:
 
 
 def placeholders(profile: dict[str, str], password: str) -> dict[str, str]:
-	"""The values the agent may type, keyed by the placeholder name it sees (`x_<field>`). Empty fields are left out."""
-	out = {f'x_{k}': v for k, v in profile.items() if k in PROFILE_COLUMNS and k not in ('id', 'password') and v}
+	"""The values the agent may type, keyed by the placeholder name it sees (`x_<field>`). Empty fields are left out.
+	Mailbox credentials are never placeholders: the agent doesn't need them and must not learn they exist."""
+	out = {f'x_{k}': v for k, v in profile.items() if k in PROFILE_COLUMNS and k not in _NOT_PLACEHOLDERS and v}
 	if profile.get('first_name') or profile.get('last_name'):
 		out['x_full_name'] = ' '.join(p for p in (profile.get('first_name'), profile.get('last_name')) if p)
 	if profile.get('dob'):
@@ -436,8 +445,8 @@ def sensitive_data(site: str, values: dict[str, str]) -> dict[str, dict[str, str
 
 
 def _blocker(ask_human: bool, codes: bool = False) -> str:
-	"""codes: the identity server can read the person's one-time codes and confirmation links (the agent has
-	get_verification_code and get_verification_link)."""
+	"""codes: veil can read the person's one-time codes and confirmation links itself (identity server or their
+	mailbox), so the agent gets get_verification_code / get_verification_link. The instructions never say how."""
 	fetch = (
 		"- If the site sends a one-time code to x_email or x_phone, call get_verification_code with channel 'email' or 'sms' "
 		"(it waits for the code to arrive) and type what it returns. Only if it returns no code, treat it as something only I can do.\n"
@@ -470,7 +479,8 @@ def build_task(
 	url: str, values: dict[str, str], ask_human: bool = False, request: str | None = None, if_registered: str = 'stop', codes: bool = False
 ) -> str:
 	"""ask_human: someone is watching (the web UI), so the agent hands CAPTCHAs and codes to them instead of stopping.
-	codes: the agent can fetch one-time codes from the identity server (get_verification_code).
+	codes: veil can fetch one-time codes and confirmation links for the agent (identity server or mailbox);
+	the agent only sees neutral tools.
 	request: the user's own words when the sign-up came from a chat message, so anything else they asked is kept.
 	if_registered: 'stop', or 'login' (the person asked to "log in or sign up": an existing account is used instead)."""
 	asked = f'\nWhat I asked, in my words: "{request.strip()}"\n' if request else ''

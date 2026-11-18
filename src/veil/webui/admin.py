@@ -1,8 +1,10 @@
-"""Settings the app can change and save to .env: LLM API keys, the default model and effort, and proxies.
+"""Settings the app can change and save to .env: LLM API keys, the default model and effort, CAPTCHA solving, and proxies.
 
     GET  /api/keys              which provider keys are set (masked: last 4 characters only)
     POST /api/keys              {provider, key} save a provider's key to .env ("" removes it)
     POST /api/llm/default       {provider, model, effort} make these the .env defaults
+    GET  /api/captcha           whether CAPTCHA solving is on, the provider, and whether a key is saved (masked)
+    POST /api/captcha           {provider, key?} switch solver provider and save its key to .env ("" removes it)
     GET  /api/proxies           mode (direct | list | gateway), the list (credentials left out), last test results
     POST /api/proxies/add       {text} paste proxies, one per line (any format Proxy.parse takes)
     POST /api/proxies/remove    {ids}
@@ -32,6 +34,7 @@ from veil.proxy import GatewayProxy, Proxy, parse_many, proxy_id, read_list, wri
 from veil.webui.manager import PROVIDERS
 
 STRATEGIES = ['round_robin', 'random', 'least_used']
+CAPTCHA_PROVIDERS = ['2captcha', 'capsolver']
 _KEY_OK = re.compile(r'^[\x21-\x7e]{8,512}$')  # printable, no spaces or quotes problems for .env
 
 
@@ -107,6 +110,39 @@ def register(app: FastAPI, env: Settings) -> None:
 		env.llm_provider, env.llm_model, env.llm_effort = provider, model, effort or None
 		env.llm_api_key = os.environ.get('VEIL_LLM_API_KEY') or None
 		return {'ok': True, **keys_state()}
+
+	# --- CAPTCHA solving ----------------------------------------------------------------------
+
+	def captcha_state() -> dict[str, Any]:
+		return {
+			'provider': env.captcha_provider, 'has_key': bool(env.captcha_api_key), 'masked': envfile.mask(env.captcha_api_key),
+			'providers': CAPTCHA_PROVIDERS, 'timeout': env.captcha_timeout, 'env_file': str(env_path),
+		}
+
+	@app.get('/api/captcha')
+	async def captcha():
+		return captcha_state()
+
+	@app.post('/api/captcha')
+	async def save_captcha(request: Request):
+		body = await _body(request)
+		provider = str(body.get('provider') or '').strip().lower()
+		if provider and provider not in CAPTCHA_PROVIDERS:
+			raise HTTPException(400, f'unknown CAPTCHA provider {provider!r}')
+		values: dict[str, str | None] = {'VEIL_CAPTCHA_PROVIDER': provider or None}
+		if 'key' in body:
+			key = str(body.get('key') or '').strip()
+			if key and (not _KEY_OK.match(key) or '"' in key or "'" in key):
+				raise HTTPException(400, "that doesn't look like an API key (no spaces or quotes, 8-512 characters)")
+			values['VEIL_CAPTCHA_API_KEY'] = key or None
+		try:
+			envfile.write(env_path, values)
+		except OSError as e:
+			raise HTTPException(500, f'could not write {env_path}: {e}') from e
+		env.captcha_provider = provider or None
+		if 'key' in body:
+			env.captcha_api_key = os.environ.get('VEIL_CAPTCHA_API_KEY') or None
+		return captcha_state()
 
 	# --- proxies -------------------------------------------------------------------------------
 

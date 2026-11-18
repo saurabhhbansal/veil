@@ -77,6 +77,15 @@ Type a task (the icons under the box set the LLM, sticky identity, geo-match / a
 - **Review (toggle in the settings bar, off by default):** after each run an LLM judges what went wrong and how to fix
   it, saves `judgement.md` / `judgement.json` with the run, shows it in the chat, and hands its advice to the next run
   in the same chat. Past runs have a *Review this run* button.
+- **Autopilot for human checks (off by default for CAPTCHAs):** email one-time codes are read from the person's own
+  mailbox over IMAP — add an app password to a profile under Accounts — so a code page no longer stops the run. CAPTCHA
+  and bot-verification widgets can be solved through a token service (2captcha or CapSolver, *Human checks* in the
+  settings bar). Both happen **behind the agent**: its task and tool results never mention the mailbox or the solver; it
+  just carries on, and the chat shows a note about what veil did. Email reading needs an app password (Gmail/Yahoo and
+  iCloud work; personal Outlook/Hotmail accounts usually require OAuth, so those codes still come to you). CAPTCHA
+  coverage: reCAPTCHA v2/v3, hCaptcha, Turnstile, FunCaptcha and image CAPTCHAs through the solver; GeeTest and a
+  Cloudflare managed challenge without a visible Turnstile can't be replayed and stop for you. SMS codes are not
+  automatic yet — those still stop for you, as does anything the solver can't clear.
 - **Accounts (top right):** a side panel for `veil signup`. **Profiles** edits your own details (`profiles.csv`, one
   profile per email you own); **Sign-ups** starts a sign-up on a site and lists where each profile was used, with status,
   notes, retry and the password veil used. Passwords never reach the page unless you press *Show password*, and the
@@ -142,6 +151,9 @@ Everything is set through environment variables; see [`.env.example`](.env.examp
 | `VEIL_LLM_PROVIDER` / `VEIL_LLM_MODEL` / `VEIL_LLM_API_KEY` | Agent brain. Defaults to `openai` / `gpt-6-luna`. `deepseek` (key in `DEEPSEEK_API_KEY`), `groq`, `anthropic` and `google` work the same way; all are selectable in the app's model menu. |
 | `VEIL_LLM_EFFORT` | Reasoning effort where the provider has levels. `deepseek`: `low` / `high` / `max`; its thinking mode is on by default (default effort `high`). |
 | `VEIL_ENGINE` | The chat app always runs `fortress`; `fortress-docker`, `cdp` and `chromium` (testing only, not stealthy) are for the CLI. |
+| `VEIL_MAILBOX_WAIT` | Seconds to poll a profile's mailbox for an emailed one-time code before asking you (see the mailbox app-password fields under Accounts) |
+| `VEIL_CAPTCHA_PROVIDER` / `VEIL_CAPTCHA_API_KEY` | CAPTCHA solver: `2captcha` or `capsolver` (blank = off, CAPTCHAs come to you). Also settable under *Human checks* in the app. |
+| `VEIL_CAPTCHA_TIMEOUT` / `VEIL_CAPTCHA_MAX_SOLVES` | Seconds per solve, and paid solves allowed on one page before asking you |
 | `VEIL_PROXY_GATEWAY` | Provider gateway URL with a `{session}` placeholder for sticky IPs |
 | `VEIL_PROXY_FILE` | One proxy per line, rotated with cooldowns |
 | `VEIL_GEO_MATCH` | Match persona timezone and language to the exit IP (default on) |

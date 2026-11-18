@@ -242,6 +242,35 @@ async def test_accounts_api_keeps_passwords_server_side_and_records_signups(tmp_
 
 
 @pytest.mark.asyncio
+async def test_profile_mailbox_secrets_stay_server_side_and_survive_an_edit(tmp_path):
+	from httpx import ASGITransport, AsyncClient
+
+	from veil import accounts
+	from veil.webui.server import create_app
+
+	env = Settings(data_dir=tmp_path)
+	app = create_app(env, port=7788)
+	async with AsyncClient(transport=ASGITransport(app=app), base_url='http://127.0.0.1:7788') as c:
+		r = await c.post(
+			'/api/accounts/profiles',
+			json={'profiles': [{'id': 'p1', 'email': 'me@gmail.com', 'password': 'Site1!', 'mailbox_password': 'app-pass-1234', 'mailbox_imap': 'imap.gmail.com'}]},
+		)
+		assert r.status_code == 200, r.text
+		row = r.json()['profiles'][0]
+		assert row['has_password'] and row['has_mailbox_password'] and row['mailbox_imap'] == 'imap.gmail.com'
+		assert 'mailbox_password' not in row and 'password' not in row and 'app-pass-1234' not in r.text and 'Site1!' not in r.text
+		# Saving the profile again without resending the secrets keeps both (the page never receives them).
+		r = await c.post('/api/accounts/profiles', json={'profiles': [{'id': 'p1', 'original_id': 'p1', 'email': 'me@gmail.com'}]})
+		saved = accounts.load_profiles(accounts.profiles_path(env))[0]
+		assert (saved['password'], saved['mailbox_password']) == ('Site1!', 'app-pass-1234')
+		# Renaming keeps the site password and can clear the mailbox app password explicitly ("").
+		r = await c.post('/api/accounts/profiles', json={'profiles': [{'id': 'me', 'original_id': 'p1', 'email': 'me@gmail.com', 'mailbox_password': ''}]})
+		assert r.json()['profiles'][0]['has_mailbox_password'] is False
+		assert accounts.load_profiles(accounts.profiles_path(env))[0]['password'] == 'Site1!'
+		assert accounts.load_profiles(accounts.profiles_path(env))[0]['mailbox_password'] == ''
+
+
+@pytest.mark.asyncio
 async def test_saved_identities_can_be_deleted_and_bad_names_refused(tmp_path):
 	from httpx import ASGITransport, AsyncClient
 

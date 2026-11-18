@@ -63,7 +63,7 @@ class RunRequest:
 	proxy_source: ProxySource | None = None  # shared by runs at the same time, so each takes its own proxy
 	group: str | None = None  # the split request this run belongs to
 	country: str | None = None  # ISO code of where the person is: their exit IP is picked there
-	fetch_code: Callable[[str], Awaitable[str | None]] | None = None  # one-time codes from the identity server
+	fetch_code: Callable[[str], Awaitable[str | None]] | None = None  # one-time codes / links veil can fetch itself
 
 
 def identity_info(n: int, total: int, session) -> dict[str, Any]:
@@ -485,6 +485,11 @@ class AgentRunner:
 			next_goal=getattr(output, 'next_goal', None), actions=step_actions(output), screenshot=shot_url,
 		)
 
+	async def _on_notice(self, level: str, text: str) -> None:
+		"""What veil's autopilot did behind the agent's back (solved a CAPTCHA, read an emailed code): the person
+		sees it in the chat; the agent's prompt and history never contain it."""
+		self._event('notice', level=level if level in ('blocked', 'error') else 'info', text=text)
+
 	async def _on_attempt_end(self, n: int, attempt: Attempt) -> None:
 		self._agent, self._session = None, None
 		if self.human:
@@ -523,7 +528,7 @@ class AgentRunner:
 		hooks = RunHooks(
 			on_attempt=self._on_attempt, on_step=self._on_step, on_attempt_end=self._on_attempt_end,
 			stop_requested=lambda: self._stop_requested, request_human=self._on_request_human, on_step_start=self._on_step_start,
-			take_followups=self._take_followups,
+			take_followups=self._take_followups, on_notice=self._on_notice,
 		)
 		kwargs = dict(req.agent_kwargs)
 		if self.run_dir:
