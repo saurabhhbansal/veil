@@ -8,6 +8,8 @@ interface ChatInputProps {
   placeholder?: string;
   isProcessing?: boolean;
   onStop?: () => void;
+  canSendEmpty?: boolean; // the "create accounts" control is a complete request on its own
+  header?: ReactNode; // a row above the box: the "create accounts" control
   footer?: ReactNode;
   autoFocus?: boolean;
 }
@@ -18,6 +20,8 @@ export function ChatInput({
   placeholder = "What should the agent do?",
   isProcessing,
   onStop,
+  canSendEmpty,
+  header,
   footer,
   autoFocus,
 }: ChatInputProps) {
@@ -34,7 +38,7 @@ export function ChatInput({
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = value.trim();
-    if (!trimmed || disabled) return;
+    if ((!trimmed && !canSendEmpty) || disabled) return;
     onSend(trimmed);
     setValue("");
     if (textareaRef.current) {
@@ -53,6 +57,7 @@ export function ChatInput({
     <div className="w-full px-4 pb-4 pt-2">
       <form onSubmit={handleSubmit}>
         <div className="flex flex-col rounded-2xl bg-zinc-900 border border-zinc-800 focus-within:border-zinc-600 transition-colors">
+          {header && <div className="px-3 pt-2.5 pb-1">{header}</div>}
           <div className="flex items-end gap-2 p-3">
             <textarea
               ref={textareaRef}
@@ -85,7 +90,7 @@ export function ChatInput({
               {(!isProcessing || value.trim()) && (
                 <button
                   type="submit"
-                  disabled={!value.trim() || disabled}
+                  disabled={(!value.trim() && !canSendEmpty) || disabled}
                   className="w-8 h-8 rounded-full bg-white hover:bg-zinc-200 disabled:opacity-30 disabled:hover:bg-white flex items-center justify-center transition-colors"
                   title={isProcessing ? "Send to the agent" : "Send"}
                 >

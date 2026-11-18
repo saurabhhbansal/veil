@@ -207,6 +207,13 @@ def save_judgement(run_dir: Path, j: judge.Judgement, title: str) -> dict[str, A
 	return data
 
 
+def review_title(req: RunRequest) -> str:
+	"""What a review calls this run. An account run gets its one-account task, never a batch title like
+	"Create 3 accounts on X": the judge's advice is handed to a later run in the same session, and the
+	agent must never learn how many accounts a batch made."""
+	return req.task if req.kind in ('signup', 'login') else (req.title or req.task)
+
+
 async def review_saved_run(runs_dir: Path, run_id: str, settings: Settings) -> dict[str, Any]:
 	"""Judge a past run on request ("Review this run")."""
 	run = load_run(runs_dir, run_id)
@@ -494,6 +501,10 @@ class AgentRunner:
 		self.status = 'reviewing'
 		self.version += 1
 		run_events = self.events[self._run_start:]
+		if req.kind in ('signup', 'login') and run_events and run_events[0].get('type') == 'task':
+			# The transcript's first line is the UI title (which may say "Create 3 accounts"); the judge reads
+			# the task the agent actually got instead.
+			run_events = [{**run_events[0], 'text': req.task}, *run_events[1:]]
 		try:
 			j = await judge.judge_run(build_llm(req.settings), run_events)
 		except asyncio.CancelledError:
@@ -503,8 +514,9 @@ class AgentRunner:
 			log.warning('run review failed: %s', e)
 			self._event('notice', level='error', text=f'Could not review the run: {type(e).__name__}: {e}')
 			return
-		data = save_judgement(self.run_dir, j, req.title or req.task) if self.run_dir else j.model_dump()
-		self.last_review = {'task': req.title or req.task, 'judgement': data}
+		title = review_title(req)
+		data = save_judgement(self.run_dir, j, title) if self.run_dir else j.model_dump()
+		self.last_review = {'task': title, 'judgement': data}
 		self._event('judgement', judgement=data, file=self._file_url(self.run_dir / 'judgement.md') if self.run_dir else None)
 
 	async def _run(self, req: RunRequest) -> None:

@@ -65,6 +65,8 @@ export const api = {
     call<{ site: string; email: string; password: string }>("/api/accounts/reveal", { site, profile_id: profileId }),
   account: (action: "signup" | "login", url: string, profileId: string, values: Record<string, unknown>, review: boolean) =>
     call<Snapshot>(`/api/accounts/${action}`, { url, profile_id: profileId || null, values, review }),
+  bulkAccounts: (body: { url: string; count: number; prompt: string; values: Record<string, unknown>; review: boolean }) =>
+    call<Snapshot>("/api/accounts/bulk", body),
 
   keys: () => call<KeysState>("/api/keys"),
   saveKey: (provider: string, key: string) => call<KeysState>("/api/keys", { provider, key }),

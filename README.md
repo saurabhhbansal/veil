@@ -81,6 +81,13 @@ Type a task (the icons under the box set the LLM, sticky identity, engine, geo-m
   profile per email you own); **Sign-ups** starts a sign-up on a site and lists where each profile was used, with status,
   notes, retry and the password veil used. Passwords never reach the page unless you press *Show password*, and the
   agent only ever sees placeholders (`x_email`, ...). In the app, CAPTCHAs and codes during a sign-up come to you.
+- **Create accounts (above the prompt box):** pick a platform, set how many accounts, and press send; anything typed in
+  the box is extra instructions **each** account gets. veil starts one run per account, each with its own person, its own
+  fresh browser identity (device, exit IP, cookies) and a **single-account** instruction: the agent is never told how many
+  accounts you asked for, so it can't finish "3 of 3" or skip work for the others. Every account uses a different profile,
+  so a request needs that many free profiles (or `VEIL_IDENTITY_API`); runs go `VEIL_MAX_PARALLEL` at a time, the rest wait
+  as *queued*, and one request can ask for up to `VEIL_MAX_BULK` accounts (25 by default). The platform list is a starting
+  point: "Other site…" takes any domain, and sites you already signed up on are offered too.
 - **Sign up from the chat:** "go sign up on LinkedIn" (or "create an account on reddit with my work email") runs as a
   sign-up with your Accounts details: a keyword check, then one small LLM call finds the site's sign-up page and which
   profile you meant (it sees only profile ids and emails). Anything else you asked in the same message is passed along.
@@ -130,7 +137,8 @@ Everything is set through environment variables; see [`.env.example`](.env.examp
 
 | Variable | Meaning |
 |---|---|
-| `VEIL_LLM_PROVIDER` / `VEIL_LLM_MODEL` / `VEIL_LLM_API_KEY` | Agent brain. Defaults to `openai` / `gpt-6-luna`. `groq` works the same way. |
+| `VEIL_LLM_PROVIDER` / `VEIL_LLM_MODEL` / `VEIL_LLM_API_KEY` | Agent brain. Defaults to `openai` / `gpt-6-luna`. `deepseek` (key in `DEEPSEEK_API_KEY`), `groq`, `anthropic` and `google` work the same way; all are selectable in the app's model menu. |
+| `VEIL_LLM_EFFORT` | Reasoning effort where the provider has levels; for `deepseek`, `high` turns thinking on. |
 | `VEIL_ENGINE` | `fortress` (default), `fortress-docker`, `cdp`, or `chromium` (testing only, not stealthy) |
 | `VEIL_PROXY_GATEWAY` | Provider gateway URL with a `{session}` placeholder for sticky IPs |
 | `VEIL_PROXY_FILE` | One proxy per line, rotated with cooldowns |

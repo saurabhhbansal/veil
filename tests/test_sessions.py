@@ -7,7 +7,7 @@ import pytest
 from dotenv import dotenv_values
 from httpx import ASGITransport, AsyncClient
 
-from veil import accounts, planner
+from veil import accounts, identities, planner
 from veil.agent import TaskResult
 from veil.config import Settings
 from veil.llm import build_llm
@@ -175,6 +175,113 @@ def test_one_proxy_source_is_shared_by_runs_at_the_same_time(tmp_path):
 	src = hub.proxy_source(s)
 	assert src is hub.proxy_source(s) and [src.acquire().host, src.acquire().host] == ['a.test', 'b.test']
 	assert hub.proxy_source(Settings()) is None
+
+
+@pytest.mark.asyncio
+async def test_bulk_accounts_make_one_fresh_account_each_without_telling_the_agent_how_many(tmp_path, monkeypatch):
+	seen, release = [], asyncio.Event()
+
+	async def fake_run_task(task, settings, identity_name=None, max_steps=None, *, hooks, agent_kwargs):
+		seen.append((identity_name, task, agent_kwargs['sensitive_data']['https://*.shop.test']['x_email']))
+		await release.wait()
+		return TaskResult(ok=True, output='SIGNUP_STATUS: signed_up - welcome', attempts=[])
+
+	monkeypatch.setattr(runner_mod, 'run_task', fake_run_task)
+	env = Settings(data_dir=tmp_path, max_parallel=2)
+	app = create_app(env, port=7788)
+	async with _client(app) as c:
+		cfg = (await c.get('/api/config')).json()
+		assert cfg['max_bulk'] == 25 and any(p['name'] == 'Reddit' for p in cfg['platforms'])
+		assert 'deepseek' in cfg['providers'] and cfg['models']['deepseek']
+		r = await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': 2, 'values': {}})
+		assert r.status_code == 400 and 'Accounts' in r.json()['detail']  # no profiles yet
+
+		accounts.save_profiles(accounts.profiles_path(env), [{'id': f'p{i}', 'email': f'{i}@a.com'} for i in (1, 2, 3)])
+		accounts.SignupLog(env.accounts_dir / 'signups.csv').record(
+			accounts.Signup('shop.test', 'p1', '1@a.com', 'pw', 'signed_up', 'acct-shop.test-p1')
+		)
+		assert (await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': 0, 'values': {}})).status_code == 400
+		assert (await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': 'x', 'values': {}})).status_code == 400
+		assert (await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': 2.9, 'values': {}})).status_code == 400
+		assert (await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': True, 'values': {}})).status_code == 400
+		r = await c.post(
+			'/api/accounts/bulk',
+			json={'url': 'shop.test', 'count': 2, 'prompt': 'create 2 accounts with my work email', 'values': {}},
+		)
+		assert r.status_code == 200, r.text
+		body = r.json()
+		side = [s for s in body['sessions'] if s['group'] == body['group']]
+		assert len(side) == 2 and not body['skipped']
+		assert body['events'][0]['text'].startswith('Create 2 accounts on shop.test')
+		await asyncio.sleep(0.05)
+		release.set()
+		for s in side:
+			await asyncio.wait_for(app.state.hub.get(s['id'])._task, timeout=2)
+		# One single-account instruction, identical for every run: the agent can't tell 2 accounts were asked for.
+		tasks = {task for _, task, _ in seen}
+		assert len(seen) == 2 and len(tasks) == 1
+		task = tasks.pop()
+		assert task.startswith('Create an account for me at https://shop.test') and 'create an account with my work email' in task
+		assert '2 accounts' not in task and 'two accounts' not in task
+		# A fresh person each, and p1 isn't reused: it already has an account there.
+		assert sorted(identity for identity, _, _ in seen) == ['acct-shop.test-p2', 'acct-shop.test-p3']
+		assert sorted(email for _, _, email in seen) == ['2@a.com', '3@a.com']
+		log = accounts.SignupLog(env.accounts_dir / 'signups.csv')
+		assert {row.profile_id: row.status for row in log.for_site('shop.test')} == {'p1': 'signed_up', 'p2': 'signed_up', 'p3': 'signed_up'}
+		# No free people left for a new account there; the count must be sane; a site must be named.
+		r = await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': 1, 'values': {}})
+		assert r.status_code == 400 and 'profiles' in r.json()['detail']
+		assert (await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': 0, 'values': {}})).status_code == 400
+		assert (await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': 99, 'values': {}})).status_code == 400
+		assert (await c.post('/api/accounts/bulk', json={'url': '', 'count': 1, 'values': {}})).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_bulk_accounts_with_the_identity_server_asks_it_for_people(tmp_path, monkeypatch):
+	seen = []
+
+	async def fake_run_task(task, settings, identity_name=None, max_steps=None, *, hooks, agent_kwargs):
+		seen.append((identity_name, task))
+		return TaskResult(ok=True, output='SIGNUP_STATUS: signed_up - welcome', attempts=[])
+
+	class People:
+		"""The identity server's contract: no listing, people handed out on demand."""
+
+		remote = True
+		people = [{'id': 'p1', 'email': '1@a.com'}, {'id': 'p2', 'email': '2@a.com'}]
+
+		def listing(self):
+			return []
+
+		def assign(self, site, purpose, exclude=()):
+			for person in self.people:
+				if person['id'] not in exclude:
+					return person
+			raise ValueError('no people left')
+
+		def get(self, profile_id):
+			return next(p for p in self.people if p['id'] == profile_id)
+
+		def report(self, row, action, *, background=True):
+			pass
+
+		def code_fetcher(self, profile_id, site):
+			return None
+
+	monkeypatch.setattr(runner_mod, 'run_task', fake_run_task)
+	monkeypatch.setattr(identities, 'profile_source', lambda settings, proxy_source=None: People())
+	env = Settings(data_dir=tmp_path, max_parallel=2, identity_api='http://id.test')
+	app = create_app(env, port=7788)
+	async with _client(app) as c:
+		r = await c.post('/api/accounts/bulk', json={'url': 'shop.test', 'count': 2, 'values': {}})
+		assert r.status_code == 200, r.text  # an empty listing is not "no people": the server assigns on demand
+		body = r.json()
+		side = [s for s in body['sessions'] if s['group'] == body['group']]
+		assert len(side) == 2
+		for s in side:
+			await asyncio.wait_for(app.state.hub.get(s['id'])._task, timeout=2)
+		assert sorted(identity for identity, _ in seen) == ['acct-shop.test-p1', 'acct-shop.test-p2']
+		assert len({task for _, task in seen}) == 1 and '1 account' not in seen[0][1]
 
 
 def test_effort_goes_to_each_provider_its_own_way():

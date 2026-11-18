@@ -26,7 +26,7 @@ def _float(name: str) -> float | None:
 @dataclass
 class Settings:
 	# LLM
-	llm_provider: str = 'openai'  # openai | groq | anthropic | google | openai-compatible
+	llm_provider: str = 'openai'  # openai | groq | anthropic | google | deepseek | openai-compatible
 	llm_model: str = 'gpt-6-luna'
 	llm_api_key: str | None = None
 	llm_base_url: str | None = None
@@ -51,6 +51,7 @@ class Settings:
 	max_attempts: int = 3
 	max_steps: int = 40
 	max_parallel: int = 3  # browsers a split request may run at once (each is a full Fortress instance)
+	max_bulk: int = 25  # accounts one "create accounts" request may make (each is a full Fortress instance)
 	data_dir: Path = field(default_factory=lambda: Path.home() / '.veil')
 	profiles_file: Path | None = None  # your own sign-up details; default <data_dir>/accounts/profiles.csv
 	env_file: Path | None = None  # the .env these settings came from; the web UI writes keys and proxies back to it
@@ -101,6 +102,7 @@ class Settings:
 		s.max_attempts = int(_opt('VEIL_MAX_ATTEMPTS') or s.max_attempts)
 		s.max_steps = int(_opt('VEIL_MAX_STEPS') or s.max_steps)
 		s.max_parallel = max(1, int(_opt('VEIL_MAX_PARALLEL') or s.max_parallel))
+		s.max_bulk = max(1, int(_opt('VEIL_MAX_BULK') or s.max_bulk))
 		dd = _opt('VEIL_DATA_DIR')
 		if dd:
 			s.data_dir = Path(dd).expanduser()

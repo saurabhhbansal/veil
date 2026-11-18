@@ -156,3 +156,89 @@ def test_watched_signups_ask_the_person_instead_of_stopping():
 def test_domain_in_ignores_email_addresses():
 	assert A.domain_in('sign up with me@gmail.com on github.com/signup') == 'github.com/signup'
 	assert A.domain_in('sign up with me@gmail.com') is None
+
+
+def test_per_account_instructions_never_say_how_many_accounts():
+	# The app keeps the count; anything the person typed that would leak it is rewritten for one account.
+	assert A.per_account('create 3 accounts on reddit with my work email') == 'create an account on reddit with my work email'
+	assert A.per_account('create 2 new accounts, one per profile') == 'create an account'
+	assert A.per_account('make two accounts in parallel') == 'make an account'
+	assert A.per_account('sign up twice with a different profile for each account') == 'sign up once with a different profile'
+	assert A.per_account('create an account with my work email') == 'create an account with my work email'  # already singular
+	assert A.per_account('create five reddit accounts') == 'create an account'
+	assert A.per_account('create accounts on reddit') == 'create an account on reddit'
+	assert A.per_account('create accounts for 4 different people') == 'create an account'
+	# A site name that happens to contain "accounts" (or the page's name) is not a count to rewrite.
+	assert A.per_account('create an account at accounts.google.com') == 'create an account at accounts.google.com'
+	assert A.per_account('open the accounts page') == 'open the accounts page'
+	assert A.per_account('') == ''
+	task = A.build_task('https://x.test', {'x_email': 'e'}, ask_human=True, request=A.per_account('create 3 accounts'))
+	assert 'Create an account for me at https://x.test' in task and 'create an account' in task
+	assert '3 accounts' not in task and '3 account' not in task
+
+
+class _RemotePeople:
+	"""An identity server that hands people out on demand and offers no listing (IdentityAPI.listing() -> [])."""
+
+	remote = True
+
+	def __init__(self, people):
+		self.people = people
+		self.assigned = []
+
+	def listing(self):
+		return []
+
+	def assign(self, site, purpose, exclude=()):
+		for person in self.people:
+			if person['id'] not in exclude:
+				self.assigned.append(person['id'])
+				return person
+		raise ValueError('no more identities')
+
+	def get(self, profile_id):
+		return next(p for p in self.people if p['id'] == profile_id)
+
+	def report(self, row, action, *, background=True):
+		pass
+
+	def code_fetcher(self, profile_id, site):
+		return None
+
+
+def test_identity_server_bulk_signups_are_assigned_on_demand(tmp_path):
+	log = A.SignupLog(tmp_path / 's.csv')
+	log.record(A.Signup('shop.test', 'p1', 'a@a.com', 'pw', 'signed_up', 'acct-shop.test-p1'))
+	source = _RemotePeople([{'id': 'p1', 'email': 'a@a.com'}, {'id': 'p2', 'email': 'b@b.com'}, {'id': 'p3', 'email': 'c@c.com'}])
+	# No listing (the server doesn't offer one): people are assigned on demand, one per account. p1 has an
+	# account there already, so it's skipped rather than logged in to.
+	picked = A.plan_fresh_signups(source, log, 'shop.test', 2)
+	assert [p['id'] for p, _ in picked] == ['p2', 'p3'] and picked[0][1] is None
+	assert source.assigned == ['p1', 'p2', 'p3']
+
+
+
+def test_bulk_signups_only_take_people_without_an_account_there(tmp_path):
+	profiles = _profiles(tmp_path)
+	log = A.SignupLog(tmp_path / 'bulk.csv')
+	log.record(A.Signup('shop.test', 'p1', 'me@a.com', 'pw', 'signed_up', 'acct-shop.test-p1'))
+	(picked, row), = A.plan_fresh_signups(profiles, log, 'shop.test', 1)
+	assert picked['id'] == 'p2' and row is None  # p1 already has an account there: that would be a login
+	with pytest.raises(ValueError, match='only 1 of your 2 profiles'):
+		A.plan_fresh_signups(profiles, log, 'shop.test', 2)
+	# A failed earlier attempt is still someone who has no account yet: the retry continues as them.
+	log.record(A.Signup('shop.test', 'p2', 'me@b.com', 'pw', 'failed', 'acct-shop.test-p2'))
+	(picked, row), = A.plan_fresh_signups(profiles, log, 'shop.test', 1)
+	assert picked['id'] == 'p2' and row.status == 'failed'
+	with pytest.raises(ValueError, match='at least one'):
+		A.plan_fresh_signups(profiles, log, 'shop.test', 0)
+	with pytest.raises(ValueError, match='3 new accounts'):
+		A.plan_fresh_signups(profiles, log, 'fresh.test', 3)
+
+
+def test_platform_picker_lists_known_sites_once():
+	platforms = A.platforms(('shop.test', 'reddit.com'))
+	assert [p['name'] for p in platforms][:2] == ['Reddit', 'GitHub']
+	assert platforms[-1] == {'name': 'shop.test', 'url': 'https://shop.test'}
+	assert sum(1 for p in platforms if A.site_of(p['url']) == 'reddit.com') == 1
+

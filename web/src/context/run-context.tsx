@@ -40,6 +40,7 @@ interface RunContextType {
   start: (task: string) => Promise<boolean>;
   steer: (text: string) => Promise<boolean>;
   startAccount: (action: "signup" | "login", url: string, profileId: string) => Promise<boolean>;
+  startBulk: (url: string, count: number, prompt: string) => Promise<boolean>;
   stop: () => Promise<void>;
   pauseResume: () => Promise<void>;
   takeOver: () => Promise<void>;
@@ -166,6 +167,20 @@ export function RunProvider({ children }: { children: ReactNode }) {
     [follow, fail, uiValues, review],
   );
 
+  const startBulk = useCallback(
+    async (url: string, count: number, prompt: string) => {
+      setError(null);
+      try {
+        follow(await api.bulkAccounts({ url, count, prompt, values: uiValues(), review }));
+        return true;
+      } catch (e) {
+        fail(e);
+        return false;
+      }
+    },
+    [follow, fail, uiValues, review],
+  );
+
   const selectSession = useCallback((id: string) => {
     if (id === sessionRef.current) return;
     sessionRef.current = id;
@@ -208,13 +223,14 @@ export function RunProvider({ children }: { children: ReactNode }) {
       start,
       steer,
       startAccount,
+      startBulk,
       stop: act(api.stop),
       pauseResume: act(api.pause),
       takeOver: act(api.takeOver),
       handBack: (note?: string) => act((s) => api.handBack(s, note))(),
       clear,
     }),
-    [snap, connected, error, sessionId, selectSession, closeSession, start, steer, startAccount, act, clear],
+    [snap, connected, error, sessionId, selectSession, closeSession, start, steer, startAccount, startBulk, act, clear],
   );
 
   return <RunContext.Provider value={value}>{children}</RunContext.Provider>;

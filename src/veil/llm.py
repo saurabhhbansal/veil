@@ -9,13 +9,17 @@ from browser_use.llm.base import BaseChatModel
 from veil.config import Settings
 
 # Where each provider's SDK looks for its key when VEIL_LLM_API_KEY isn't set.
-KEY_ENV = {'openai': 'OPENAI_API_KEY', 'groq': 'GROQ_API_KEY', 'anthropic': 'ANTHROPIC_API_KEY', 'google': 'GOOGLE_API_KEY'}
+KEY_ENV = {
+	'openai': 'OPENAI_API_KEY', 'groq': 'GROQ_API_KEY', 'anthropic': 'ANTHROPIC_API_KEY', 'google': 'GOOGLE_API_KEY', 'deepseek': 'DEEPSEEK_API_KEY',
+}
 
 # Reasoning effort each provider accepts, lowest first. Omitted = the provider's own default.
 EFFORTS: dict[str, list[str]] = {
 	'openai': ['minimal', 'low', 'medium', 'high', 'xhigh'],
 	'anthropic': ['low', 'medium', 'high', 'xhigh', 'max'],
 	'google': ['minimal', 'low', 'medium', 'high'],
+	# DeepSeek has one thinking switch, not a ladder: high sends thinking on, anything else leaves it off.
+	'deepseek': ['low', 'high'],
 }
 
 # Suggestions for the model box; any other model name works too.
@@ -24,6 +28,7 @@ MODELS: dict[str, list[str]] = {
 	'anthropic': ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
 	'google': [],
 	'groq': [],
+	'deepseek': ['deepseek-v4-flash'],
 	'openai-compatible': [],
 }
 
@@ -59,6 +64,12 @@ def build_llm(settings: Settings) -> BaseChatModel:
 		from browser_use import ChatGroq
 
 		return ChatGroq(model=settings.llm_model, api_key=key, temperature=settings.llm_temperature)
+	if p == 'deepseek':
+		from browser_use import ChatDeepSeek
+
+		# browser-use's DeepSeek client talks to https://api.deepseek.com/v1. Thinking is on or off there rather
+		# than a level, so only 'high' turns it on (the wrapper ignores it on models without thinking).
+		return ChatDeepSeek(model=settings.llm_model, api_key=key, temperature=settings.llm_temperature, thinking=effort == 'high')
 	if p == 'anthropic':
 		from browser_use import ChatAnthropic
 
@@ -73,4 +84,4 @@ def build_llm(settings: Settings) -> BaseChatModel:
 		from browser_use import ChatGoogle
 
 		return ChatGoogle(model=settings.llm_model, api_key=key, temperature=settings.llm_temperature, **({'thinking_level': effort} if effort else {}))
-	raise ValueError(f'unknown VEIL_LLM_PROVIDER {p!r}; use openai, groq, anthropic, google or openai-compatible')
+	raise ValueError(f'unknown VEIL_LLM_PROVIDER {p!r}; use openai, groq, anthropic, google, deepseek or openai-compatible')

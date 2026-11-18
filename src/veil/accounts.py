@@ -61,6 +61,38 @@ def normalize_url(url: str) -> str:
 	return url if '://' in url else f'https://{url}'
 
 
+# The platform picker in the web app (and its "create accounts" control). A starting page for the sign-up
+# flow, not a promise: the agent finds the site's own form from there, and any other domain can be typed in.
+PLATFORMS = [
+	{'name': 'Reddit', 'url': 'https://www.reddit.com/register'},
+	{'name': 'GitHub', 'url': 'https://github.com/signup'},
+	{'name': 'LinkedIn', 'url': 'https://www.linkedin.com/signup'},
+	{'name': 'X (Twitter)', 'url': 'https://x.com/i/flow/signup'},
+	{'name': 'Instagram', 'url': 'https://www.instagram.com/accounts/emailsignup/'},
+	{'name': 'Facebook', 'url': 'https://www.facebook.com/r.php'},
+	{'name': 'Google', 'url': 'https://accounts.google.com/signup'},
+	{'name': 'Discord', 'url': 'https://discord.com/register'},
+	{'name': 'TikTok', 'url': 'https://www.tiktok.com/signup'},
+	{'name': 'Spotify', 'url': 'https://www.spotify.com/signup'},
+	{'name': 'Twitch', 'url': 'https://www.twitch.tv/signup'},
+	{'name': 'Pinterest', 'url': 'https://www.pinterest.com/signup/'},
+]
+
+
+def platforms(known_sites: tuple[str, ...] | list[str] = ()) -> list[dict[str, str]]:
+	"""The picker's platforms: the list above, plus sites veil already signed up on (so repeats are easy)."""
+	out: list[dict[str, str]] = []
+	seen = set()
+	for p in PLATFORMS:
+		out.append(dict(p))
+		seen.add(site_of(p['url']))
+	for site in known_sites:
+		if site not in seen:
+			seen.add(site)
+			out.append({'name': site, 'url': normalize_url(site)})
+	return out
+
+
 # --- profiles (the user's file) -----------------------------------------------------------------
 
 
@@ -275,6 +307,116 @@ def plan_signup(
 		identity=identity_name(site, profile['id']),
 	)
 	return profile, signup, False
+
+
+# --- several accounts at once (the app's "create N accounts" control) --------------------------------
+#
+# Each account is its own run: its own person (one of the profiles you own, or one the identity server
+# hands out), its own fresh browser identity, and its own single-account instruction. The agent is never
+# told how many accounts the request makes, so it can't write "3 of 3 done" or skip work for the others.
+
+
+def _free_profiles(source: ProfileSource, log: SignupLog, site: str) -> list[dict[str, str]]:
+	"""The people the source lists who don't have an account on `site` yet. Empty when it lists nobody
+	(an identity server may not offer a listing: it can still assign people on demand)."""
+	try:
+		profiles = source.listing()
+	except (ValueError, OSError):
+		return []
+	return [p for p in profiles if not (row := log.get(site, p['id'])) or row.status not in DONE_STATUSES]
+
+
+def plan_fresh_signups(
+	source: list[dict[str, str]] | ProfileSource, log: SignupLog, site: str, count: int
+) -> list[tuple[dict[str, str], Signup | None]]:
+	"""Pick `count` people for `count` NEW accounts on `site`: (profile, the row that person already tried with or None).
+
+	Never someone who already has an account there (DONE_STATUSES): that would be a login, not a fresh account.
+	A row from an earlier failed attempt is fine: the retry continues as the same person. Raises ValueError with
+	what to do when the source can't supply enough people (profiles.csv is finite; the identity server isn't).
+	"""
+	source = _source(source)
+	if count < 1:
+		raise ValueError('ask for at least one account')
+	if not source.remote:
+		# A finite list (profiles.csv): pick from the free ones outright, rather than asking at random and
+		# repeatedly drawing people who already have an account there.
+		free = _free_profiles(source, log, site)
+		if len(free) < count:
+			total = len(source.listing())
+			raise ValueError(
+				f'{site}: {count} new account{"s" if count != 1 else ""} asked for, but only {len(free)} of your {total} profiles '
+				f'{"is" if len(free) == 1 else "are"} free there (the rest already have one). Ask for fewer, add a profile under '
+				'Accounts, or set VEIL_IDENTITY_API so people are handed out on demand.'
+			)
+		picked = secrets.SystemRandom().sample(free, count)
+		return [(p, log.get(site, p['id'])) for p in picked]
+	# The identity server assigns people on demand (its listing, when offered, is not a limit): ask it,
+	# skipping anyone who already has an account here.
+	taken: set[str] = set()
+	out: list[tuple[dict[str, str], Signup | None]] = []
+	tries = 0
+	while len(out) < count:
+		tries += 1
+		if tries > count * 5 + 10:  # the source keeps offering people who already have an account here
+			raise ValueError(f'{site}: could not find {count} people without an account there (try fewer accounts)')
+		try:
+			profile = source.assign(site, 'signup', taken)
+		except ValueError as e:
+			if getattr(e, 'status', None) is not None:
+				raise  # the identity server's own refusal: the endpoint reports it as 502
+			left = count - len(out)
+			raise ValueError(f'{site}: no more people for a new account ({left} short): {e}') from e
+		if profile['id'] in taken:  # a source that ignores `exclude`
+			continue
+		taken.add(profile['id'])
+		row = log.get(site, profile['id'])
+		if row and row.status in DONE_STATUSES:
+			continue  # already has an account there: not a fresh one
+		out.append((profile, row))
+	return out
+
+
+# What the person typed that would tell the agent how many accounts the request makes, or that there are
+# others at all. Rewritten for a single, fresh sign-up before the task text is built.
+_MANY = r'(?:\d{1,3}|a\s+few|several|multiple|two|three|four|five|six|seven|eight|nine|ten)'
+_COUNT = rf'(?:{_MANY}|one|an?)'
+_ACCOUNT_NOUN = r'(?:accounts?|sign[\s-]?ups?|registrations?)'
+_CREATE = r'(?:create|make|open|set\s*up|register|sign\s*up|enrol)'
+_MULTIPLE_PEOPLE = re.compile(
+	rf'\b(?:for|with|across)\s+{_MANY}\s+(?:different\s+|separate\s+|other\s+|more\s+)?(?:people|persons|profiles|emails|accounts)\b', re.I
+)
+_ONE_PER = re.compile(r'\b(?:one|1|once)\s+(?:account\s+)?per\s+(?:profiles?|emails?|accounts?)\b', re.I)
+_EACH_ACCOUNT = re.compile(r'\b(?:for|on|with)\s+each\s+(?:of\s+)?(?:my\s+|the\s+)?(?:profiles?|emails?|accounts?)\b', re.I)
+_EACH_ONE = re.compile(r'\b(?:each|every)\s+(?:one|account)\b', re.I)
+_CREATE_ACCOUNTS = re.compile(rf'\b(?P<verb>{_CREATE})\s+(?:me\s+)?{_ACCOUNT_NOUN}\b', re.I)
+# A count, up to three words in between ("3 new accounts", "five reddit accounts"), then the noun. The
+# words may not be prepositions or conjunctions, so "2 days to create accounts" isn't mistaken for a count.
+_GAP_WORD = r'(?!(?:to|and|then|for|on|at|with|in|of|from|by|the)\b)[\w-]+\s+'
+_COUNTED_ACCOUNTS = re.compile(rf'\b{_COUNT}\s+(?:{_GAP_WORD}){{0,3}}?{_ACCOUNT_NOUN}\b', re.I)
+_TWICE = re.compile(r'\b(twice|thrice)\b', re.I)
+_PARALLEL = re.compile(r'\b(?:in\s+parallel|at\s+once|simultaneously|side\s+by\s+side)\b', re.I)
+_AS_MANY = re.compile(r'\bas\s+many\s+as\s+(?:possible|i\s+(?:asked|said|want)|you\s+can)\b', re.I)
+
+
+def per_account(text: str) -> str:
+	"""The person's own words reworded for ONE account, so every run reads as a lone, fresh sign-up.
+
+	The count itself never reaches the agent (the app keeps it); this also rewrites any count the person typed
+	into the prompt ("create 3 accounts with my work email" -> "create an account with my work email").
+	"""
+	out = _AS_MANY.sub('', text or '')
+	out = _MULTIPLE_PEOPLE.sub('', out)
+	out = _ONE_PER.sub('', out)
+	out = _EACH_ACCOUNT.sub('', out)
+	out = _EACH_ONE.sub('the account', out)
+	out = _CREATE_ACCOUNTS.sub(r'\g<verb> an account', out)
+	out = _COUNTED_ACCOUNTS.sub('an account', out)
+	out = _TWICE.sub('once', out)
+	out = _PARALLEL.sub('', out)
+	out = re.sub(r'\s+([,.;:!?])', r'\1', out)
+	out = re.sub(r'\s{2,}', ' ', out).strip()
+	return re.sub(r'[\s,;]+$', '', out)
 
 
 def sensitive_data(site: str, values: dict[str, str]) -> dict[str, dict[str, str]]:

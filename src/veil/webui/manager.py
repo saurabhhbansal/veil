@@ -7,7 +7,7 @@ from typing import Any
 
 from veil.config import Settings
 
-PROVIDERS = ['openai', 'groq', 'anthropic', 'google', 'openai-compatible']
+PROVIDERS = ['openai', 'groq', 'anthropic', 'google', 'deepseek', 'openai-compatible']
 ENGINES = ['fortress', 'fortress-docker', 'cdp', 'chromium']
 
 

@@ -21,8 +21,10 @@ is the running log of limits and site defences (add a dated entry when a run tea
   `evaluate_isolated()` (an isolated world, raw CDP). Don't use browser-use's `actor` Page API; it enables Runtime.
 - **Windows:** start `chrome.exe` directly (engine.py `fortress_command`), never `cmd /c tilion.cmd`.
   cmd.exe treats `<-loopback>` as redirection, and TILION_NO_DEFAULTS would also drop the WebGPU switches.
-- **The LLM is configurable.** Currently OpenAI `gpt-6-luna` (released Sept 2026). Groq, Anthropic, Gemini
-  and OpenAI-compatible providers are supported in llm.py. Leave temperature unset by default.
+- **The LLM is configurable.** Currently OpenAI `gpt-6-luna` (released Sept 2026). Groq, Anthropic, Gemini,
+  DeepSeek (`ChatDeepSeek`, key in `DEEPSEEK_API_KEY`; its only reasoning switch is `thinking`, so `high` turns it
+  on) and OpenAI-compatible providers are supported in llm.py and selectable in the app. Leave temperature unset by
+  default.
 - **Proxies:** there's no provider yet. The plan is the user's own phone as a free mobile proxy first, then DataImpulse
   ($1/GB, gateway `http://LOGIN__cr.us;sessid.{session}:PASS@gw.dataimpulse.com:823`). Chromium
   can't authenticate SOCKS proxies: use HTTP. browser-use answers HTTP proxy auth over CDP (Fetch domain).
@@ -41,7 +43,8 @@ src/veil/
   check.py      `veil check`: compares the page-visible fingerprint with the persona
   accounts.py   `veil signup` / `veil accounts`: the user's own profiles.csv -> domain-scoped sensitive_data placeholders;
                 signups.csv logs site/profile/status, one account per (site, profile), each on its own sticky identity;
-                build_login_task / plan_login log in with the row's password (or the profile's, for accounts made outside veil)
+                build_login_task / plan_login log in with the row's password (or the profile's, for accounts made outside veil);
+                PLATFORMS + plan_fresh_signups + per_account feed the app's "create N accounts" control (see below)
   identities.py where account runs get their person: LocalProfiles (profiles.csv) or IdentityAPI (VEIL_IDENTITY_API, the
                 company identity server: assign / get / list / events / OTP codes / email links; contract in docs/IDENTITY_API.md;
                 the server itself is the sibling project ../veil-identity-server)
@@ -63,11 +66,17 @@ also has a `request_human_help` action. hand_back() injects an ActionResult note
 Not Browser Use Cloud: veil never uses hosted browser services (user decision, 2026-10-09).
 Accounts in the app: /api/accounts* (server.py) over accounts.py; sign-ups and logins run through AgentRunner (RunRequest.title/
 kind/on_done records the status). Passwords leave the server only via /api/accounts/reveal; API keys and proxy credentials never.
+Create accounts: POST /api/accounts/bulk {url, count, prompt} -> accounts.plan_fresh_signups picks `count` people who have no
+account there yet (never a DONE row: that would be a login), then start_group runs one job per person. Count is capped by
+Settings.max_bulk (VEIL_MAX_BULK, default 25). Invariant, don't break it:
+the count never reaches the agent. Every job's task is the one-account instruction from accounts.build_task (accounts.per_account
+strips counts/multiplicity from the person's prompt), run titles are UI-only, and each job gets its own profile + identity, so no
+run can see another. PLATFORMS (plus sites already in signups.csv) fills GET /api/config -> the app's platform picker.
 Sessions: endpoints take `session` (body or ?session=), default 'main'. A request the planner splits runs each job in its own
 session/browser/identity (queued past VEIL_MAX_PARALLEL); the app shows them as tabs. Each run in the sidebar has a ⋯ menu
 (open, rename, download recording, delete: /api/runs/<id>/rename|delete).
 LLM effort: Settings.llm_effort (VEIL_LLM_EFFORT, llm.EFFORTS per provider): OpenAI reasoning_effort, Anthropic adaptive thinking +
-output_config.effort, Google thinking_level. Proxies: VEIL_PROXY_MODE (direct | list | gateway) picks the source and keeps the others in .env.
+output_config.effort, Google thinking_level, DeepSeek thinking (high = on). Proxies: VEIL_PROXY_MODE (direct | list | gateway) picks the source and keeps the others in .env.
 Country-matched exits: account runs pass the profile's country (geo.country_code) as RunRequest.country -> run_task ->
 StealthSession -> ProxySource.acquire(country=). Lists learn countries from the last test (proxy-status.json); gateways
 fill {country}/{COUNTRY} (VEIL_PROXY_COUNTRY when none). No proxy there: any proxy, and the run posts a notice.

@@ -179,8 +179,16 @@ export interface VeilConfig {
   max_attempts: number;
   max_steps: number;
   identities: string[];
+  platforms: Platform[]; // the "create accounts" platform picker
+  max_bulk: number; // most accounts one request may ask for
   proxy: "gateway" | "list" | null;
   proxy_detail: string | null;
+}
+
+/** A site the "create accounts" control offers: a starting page for its sign-up flow. */
+export interface Platform {
+  name: string;
+  url: string;
 }
 
 // ── Chat rendering (adapted from chat-ui-example's turn model) ──

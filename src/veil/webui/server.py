@@ -27,6 +27,9 @@ GET/SSE/WebSocket) and default to 'main'.
                                 (with VEIL_IDENTITY_API set, people come from the company identity server instead: identities.py)
     POST /api/accounts/signup   {url, profile_id?, values} sign up on a site as one of your profiles (a normal run)
     POST /api/accounts/login    {url, profile_id?, values} log in to an account you have there
+    POST /api/accounts/bulk     {url, count, prompt?, values} create `count` NEW accounts there, one run per account:
+                                each gets a different person, its own identity, and a one-account instruction (the
+                                agent never learns the count). Platforms come from GET /api/config.
     POST /api/accounts/reveal   {site, profile_id} the password veil used on that site
     ... and /api/keys, /api/llm/default, /api/proxies* (admin.py)
 
@@ -103,6 +106,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 	hub = SessionHub(env.data_dir / 'runs', main=runner, max_parallel=env.max_parallel)
 	runner = hub.main
 	runner.runs_dir.mkdir(parents=True, exist_ok=True)
+	profiles_file, signups_file = accounts.profiles_path(env), env.accounts_dir / 'signups.csv'
 	allowed = allowed_origins(host, port, dev)
 	hosts = allowed_origins(host, port, dev=False)
 	app = FastAPI(title='veil', docs_url=None, redoc_url=None, openapi_url=None)
@@ -127,12 +131,16 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 	@app.get('/api/config')
 	async def config():
 		keys = {p: bool(env.llm_api_key if p == env.llm_provider and env.llm_api_key else os.environ.get(var)) for p, var in KEY_ENV.items()}
+		try:
+			known = sorted({r.site for r in accounts.SignupLog(signups_file).rows.values()})
+		except (OSError, ValueError):
+			known = []
 		return {
 			'llm_provider': env.llm_provider, 'llm_model': env.llm_model, 'llm_effort': env.llm_effort,
 			'has_api_key': keys.get(env.llm_provider, False), 'keys': keys, 'providers': PROVIDERS, 'efforts': EFFORTS, 'models': MODELS,
 			'engine': env.engine, 'engines': ENGINES, 'headless': env.headless,
 			'geo_match': env.geo_match, 'max_attempts': env.max_attempts, 'max_steps': env.max_steps, 'max_parallel': hub.max_parallel,
-			'identities': saved_identities(env),
+			'identities': saved_identities(env), 'platforms': accounts.platforms(known), 'max_bulk': env.max_bulk,
 			'proxy': 'gateway' if env.proxy_gateway else 'list' if env.proxy_file else None,
 			'proxy_detail': str(env.proxy_file) if env.proxy_file and not env.proxy_gateway else None,
 		}
@@ -191,8 +199,6 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 
 	# --- account jobs: sign up / log in with your own details ----------------------------------
 
-	profiles_file, signups_file = accounts.profiles_path(env), env.accounts_dir / 'signups.csv'
-
 	def read_profiles() -> tuple[list[dict[str, str]], str | None]:
 		"""profiles.csv, or with an identity server, whoever it lists (blocking: call it off the event loop)."""
 		if env.identity_api:
@@ -243,7 +249,7 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 					f'{site} already has an account ({row.status.replace("_", " ")}) with {row.email}. Not creating another; '
 					f'say "log in to {site}" to use it.',
 				)
-			task = accounts.build_task(url, typed, ask_human=True, request=request_text, if_registered=if_registered, codes=bool(fetch_code))
+			task = accounts.build_task(url, typed, ask_human=True, request=accounts.per_account(request_text) if request_text else None, if_registered=if_registered, codes=bool(fetch_code))
 
 			def done(result) -> None:
 				log_.record(accounts.finish(row, result.output, result.attempts))
@@ -516,6 +522,56 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 	@app.post('/api/accounts/login')
 	async def login(request: Request):
 		return await account_from_panel(request, 'login')
+
+	@app.post('/api/accounts/bulk')
+	async def bulk_signup(request: Request):
+		"""Create `count` NEW accounts on one site, side by side: each gets its own person, browser identity and
+		a single-account instruction (the agent never learns how many accounts the request makes)."""
+		body = await body_of(request)
+		values = {k: v for k, v in (body.get('values') or {}).items() if k in UI_VALUE_IDS}
+		raw_count = body.get('count')
+		if raw_count is None:
+			count = 1
+		elif isinstance(raw_count, int) and not isinstance(raw_count, bool):
+			count = raw_count
+		elif isinstance(raw_count, str) and raw_count.strip().isdigit():
+			count = int(raw_count.strip())
+		else:
+			raise HTTPException(400, 'how many accounts must be a whole number')
+		if not 1 <= count <= env.max_bulk:
+			raise HTTPException(400, f'ask for between 1 and {env.max_bulk} accounts at a time')
+		raw = str(body.get('url') or '').strip()
+		if not raw:
+			raise HTTPException(400, 'pick the site to create accounts on')
+		try:
+			settings = settings_from_ui(values, env)[0]
+			site, url = accounts.site_of(raw), accounts.normalize_url(raw)
+		except (ValueError, RuntimeError) as e:
+			raise HTTPException(400, str(e)) from e
+		if env.identity_api:
+			try:
+				source = await asyncio.to_thread(identities.profile_source, settings, hub.proxy_source(settings))
+			except ValueError as e:
+				raise HTTPException(400, str(e)) from e
+		else:
+			profiles, error = await asyncio.to_thread(read_profiles)
+			if not profiles:
+				raise HTTPException(400, error or 'To create accounts, add a profile under Accounts (top right) first.')
+			source = identities.LocalProfiles(profiles)
+		log_ = accounts.SignupLog(signups_file)
+		try:
+			# Who signs up as whom: people without an account there yet, one per account (off the event loop:
+			# the identity server is a network call).
+			picks = await asyncio.to_thread(accounts.plan_fresh_signups, source, log_, site, count)
+		except identities.IdentityAPIError as e:
+			raise HTTPException(502, str(e)) from e
+		except ValueError as e:
+			raise HTTPException(400, str(e)) from e
+		# The prompt box is extra instructions each account gets; counts in it are rewritten, never sent as-is.
+		prompt = accounts.per_account(str(body.get('prompt') or ''))[:4000]
+		jobs = [Job('signup', url, profile['id'], prompt) for profile, _ in picks]
+		title = f'Create {count} account{"s" if count != 1 else ""} on {site}'
+		return await start_group(title, jobs, values, bool(body.get('review')))
 
 	admin.register(app, env)
 

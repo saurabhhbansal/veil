@@ -12,6 +12,7 @@ import { RunsSidebar } from "@/components/runs-sidebar";
 import { BrowserPanel } from "@/components/browser-panel";
 import { ChatInput } from "@/components/chat-input";
 import { ChatMessages } from "@/components/chat-messages";
+import { CreateAccounts, NO_ACCOUNT_REQUEST, type AccountRequest } from "@/components/create-accounts";
 import { SettingsBar } from "@/components/settings-bar";
 import { useRun } from "@/context/run-context";
 import { useSettings } from "@/context/settings-context";
@@ -47,6 +48,7 @@ function ErrorLine() {
 }
 
 type Panels = { onAccounts: () => void; onProxies: () => void };
+type AccountComposer = { accountRequest: AccountRequest; onAccountRequest: (v: AccountRequest) => void };
 
 function PanelButtons({ onAccounts, onProxies, compact }: Panels & { compact?: boolean }) {
   const cls = `inline-flex items-center gap-1.5 rounded-md text-[12px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 ${
@@ -113,15 +115,19 @@ function SessionTabs() {
   );
 }
 
-function Home({ onAccounts, onProxies }: Panels) {
-  const { start } = useRun();
+function Home({ onAccounts, onProxies, accountRequest, onAccountRequest }: Panels & AccountComposer) {
+  const { start, startBulk } = useRun();
   const { config } = useSettings();
   const [isStarting, setIsStarting] = useState(false);
 
   async function handleSend(task: string) {
     if (isStarting) return;
     setIsStarting(true);
-    await start(task);
+    // The prompt box is extra instructions for each account, or the task itself when accounts are off.
+    if (accountRequest.on) {
+      // A batch is one action: after it starts, the next send is an ordinary task again (unless it failed).
+      if (await startBulk(accountRequest.url, accountRequest.count, task)) onAccountRequest({ ...accountRequest, on: false });
+    } else await start(task);
     setIsStarting(false);
   }
 
@@ -139,8 +145,9 @@ function Home({ onAccounts, onProxies }: Panels) {
           <h1 className="text-3xl font-semibold text-zinc-100">What should the agent do?</h1>
           <p className="text-sm text-zinc-500 max-w-md mx-auto">
             It works in a Fortress stealth browser with a fresh, coherent device and exit IP. You can watch it live and take over any time, and
-            it hands you the browser when a CAPTCHA or a code needs a person. Say “log in to reddit” or “create 2 accounts on X, one per
-            profile” and it uses your details from Accounts, one browser per account, side by side.
+            it hands you the browser when a CAPTCHA or a code needs a person. Say “log in to reddit”, or use <span className="text-zinc-400">Create
+            accounts</span> above the box to make new accounts on a platform: each one gets its own person, browser and IP, and is only ever told
+            to make that one account.
           </p>
         </div>
 
@@ -148,11 +155,19 @@ function Home({ onAccounts, onProxies }: Panels) {
           <ChatInput
             onSend={handleSend}
             disabled={isStarting || !config}
-            placeholder="Describe a task…"
+            placeholder={accountRequest.on ? "Optional: anything each new account should do…" : "Describe a task…"}
             autoFocus
+            canSendEmpty={accountRequest.on} // platform + count is a complete request
+            header={<CreateAccounts value={accountRequest} onChange={onAccountRequest} disabled={isStarting} />}
             footer={<SettingsBar onManageProxies={onProxies} />}
           />
-          {isStarting && <p className="text-sm text-zinc-500 text-center mt-2">Starting… (account requests are planned first)</p>}
+          {isStarting && (
+            <p className="text-sm text-zinc-500 text-center mt-2">
+              {accountRequest.on
+                ? `Starting ${accountRequest.count} account run${accountRequest.count === 1 ? "" : "s"}… (each gets its own browser)`
+                : "Starting… (account requests are planned first)"}
+            </p>
+          )}
           <ErrorLine />
         </div>
       </div>
@@ -160,8 +175,8 @@ function Home({ onAccounts, onProxies }: Panels) {
   );
 }
 
-function SessionView({ onAccounts, onProxies }: Panels) {
-  const { snap, turns, start, stop, clear, handBack, steer } = useRun();
+function SessionView({ onAccounts, onProxies, accountRequest, onAccountRequest }: Panels & AccountComposer) {
+  const { snap, turns, start, startBulk, stop, clear, handBack, steer } = useRun();
   const chatRef = useRef<HTMLDivElement>(null);
   const [mobilePane, setMobilePane] = useState<"chat" | "browser">("chat");
   const status = STATUS[snap.status];
@@ -179,6 +194,16 @@ function SessionView({ onAccounts, onProxies }: Panels) {
   }, [snap.status]);
 
   const needsHuman = snap.status === "needs_human";
+
+  function sendFromComposer(text: string) {
+    if (needsHuman) void handBack(text);
+    else if (snap.busy) void steer(text);
+    else if (accountRequest.on) {
+      void startBulk(accountRequest.url, accountRequest.count, text).then((ok) => {
+        if (ok) onAccountRequest({ ...accountRequest, on: false }); // one batch per go
+      });
+    } else void start(text);
+  }
 
   return (
     <div className="flex h-screen w-full overflow-hidden">
@@ -236,7 +261,7 @@ function SessionView({ onAccounts, onProxies }: Panels) {
         <div className="max-w-2xl w-full mx-auto">
           <ErrorLine />
           <ChatInput
-            onSend={(text) => (needsHuman ? handBack(text) : snap.busy ? steer(text) : start(text))}
+            onSend={sendFromComposer}
             isProcessing={snap.busy && !needsHuman}
             disabled={snap.status === "stopping" || snap.status === "reviewing" || snap.status === "queued"}
             autoFocus
@@ -250,8 +275,12 @@ function SessionView({ onAccounts, onProxies }: Panels) {
                   ? "Reviewing the run…"
                   : snap.busy
                     ? "Steer the agent, e.g. \"use the search box instead\"…"
-                    : "Send a new task…"
+                    : accountRequest.on
+                      ? "Optional: anything each new account should do…"
+                      : "Send a new task…"
             }
+            canSendEmpty={accountRequest.on && !snap.busy}
+            header={!snap.busy ? <CreateAccounts value={accountRequest} onChange={onAccountRequest} /> : undefined}
             footer={!snap.busy ? <SettingsBar onManageProxies={onProxies} /> : undefined}
           />
         </div>
@@ -277,6 +306,7 @@ export default function Page() {
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [proxiesOpen, setProxiesOpen] = useState(false);
   const [viewing, setViewing] = useState<string | null>(null); // a past run; null = the live chat
+  const [accountRequest, setAccountRequest] = useState<AccountRequest>(NO_ACCOUNT_REQUEST);
   if (!connected && snap.version < 0 && sessionId === "main") {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center">
@@ -317,9 +347,9 @@ export default function Page() {
         {past ? (
           <RunView runId={past} liveBusy={snap.busy} onBack={() => setViewing(null)} />
         ) : snap.events.length || snap.session !== "main" ? (
-          <SessionView {...panels} />
+          <SessionView {...panels} accountRequest={accountRequest} onAccountRequest={setAccountRequest} />
         ) : (
-          <Home {...panels} />
+          <Home {...panels} accountRequest={accountRequest} onAccountRequest={setAccountRequest} />
         )}
       </main>
       <AccountsPanel open={accountsOpen} onClose={() => setAccountsOpen(false)} />

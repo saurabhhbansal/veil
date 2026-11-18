@@ -355,6 +355,33 @@ async def test_review_is_saved_and_handed_to_the_next_run(tmp_path, monkeypatch)
 	assert 'extend_system_message' not in seen[-1]
 
 
+@pytest.mark.asyncio
+async def test_review_of_an_account_run_does_not_see_how_many_accounts(tmp_path, monkeypatch):
+	from veil import judge
+
+	seen = {}
+
+	async def fake_run_task(task, settings, identity_name=None, max_steps=None, *, hooks, agent_kwargs):
+		return TaskResult(ok=True, output='SIGNUP_STATUS: signed_up - welcome', attempts=[])
+
+	async def fake_judge(llm, events):
+		seen['events'] = events
+		return judge.Judgement(verdict='success', summary='made one account', what_went_wrong=[], fixes=[], advice_for_next_run='keep going')
+
+	monkeypatch.setattr(runner_mod, 'run_task', fake_run_task)
+	monkeypatch.setattr(runner_mod, 'build_llm', lambda s: object())
+	monkeypatch.setattr(judge, 'judge_run', fake_judge)
+	r = AgentRunner(runs_dir=tmp_path)
+	title = 'Create 3 accounts on shop.test\n\n→ Signing up at shop.test as me (me@a.com)'
+	task = 'Create an account for me at https://shop.test using my own details.'
+	r.start(RunRequest(task=task, title=title, kind='signup', settings=Settings(), review=True))
+	await asyncio.wait_for(r._task, timeout=2)
+	assert r.events[0]['text'] == title  # the chat still shows what the person asked for
+	assert seen['events'][0]['type'] == 'task' and seen['events'][0]['text'] == task  # the judge sees the one-account task
+	assert '3 accounts' not in r.last_review['task']  # this is what a later run in the session would read
+	assert '3 accounts' not in (r.run_dir / 'judgement.md').read_text()
+
+
 def test_review_transcript_is_compact_text():
 	from veil import judge
 
