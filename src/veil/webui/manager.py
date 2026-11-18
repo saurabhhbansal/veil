@@ -8,7 +8,6 @@ from typing import Any
 from veil.config import Settings
 
 PROVIDERS = ['openai', 'groq', 'anthropic', 'google', 'deepseek', 'openai-compatible']
-ENGINES = ['fortress', 'fortress-docker', 'cdp', 'chromium']
 
 
 def saved_identities(settings: Settings) -> list[str]:
@@ -48,7 +47,8 @@ def settings_from_ui(values: dict[str, Any], base: Settings) -> tuple[Settings, 
 	temp = v('agent_settings.llm_temperature')
 	s.llm_temperature = None if _blank(temp) else float(temp)
 
-	s.engine = text('stealth_settings.engine') or s.engine
+	# The app always drives the Fortress stealth browser; engine variants stay a CLI/.env choice for testing.
+	s.engine = 'fortress'
 	s.fortress_channel = text('stealth_settings.fortress_channel') or s.fortress_channel
 	s.cdp_url = prefilled('stealth_settings.cdp_url', s.cdp_url)
 	if v('stealth_settings.headful') is not None:

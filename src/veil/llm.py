@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 
 from browser_use.llm.base import BaseChatModel
 
@@ -18,8 +19,8 @@ EFFORTS: dict[str, list[str]] = {
 	'openai': ['minimal', 'low', 'medium', 'high', 'xhigh'],
 	'anthropic': ['low', 'medium', 'high', 'xhigh', 'max'],
 	'google': ['minimal', 'low', 'medium', 'high'],
-	# DeepSeek has one thinking switch, not a ladder: high sends thinking on, anything else leaves it off.
-	'deepseek': ['low', 'high'],
+	# DeepSeek: thinking mode is on by default (its own default effort is high); reasoning_effort picks the level.
+	'deepseek': ['low', 'high', 'max'],
 }
 
 # Suggestions for the model box; any other model name works too.
@@ -28,7 +29,7 @@ MODELS: dict[str, list[str]] = {
 	'anthropic': ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
 	'google': [],
 	'groq': [],
-	'deepseek': ['deepseek-v4-flash'],
+	'deepseek': ['deepseek-flash', 'deepseek-v4-pro'],
 	'openai-compatible': [],
 }
 
@@ -67,9 +68,26 @@ def build_llm(settings: Settings) -> BaseChatModel:
 	if p == 'deepseek':
 		from browser_use import ChatDeepSeek
 
-		# browser-use's DeepSeek client talks to https://api.deepseek.com/v1. Thinking is on or off there rather
-		# than a level, so only 'high' turns it on (the wrapper ignores it on models without thinking).
-		return ChatDeepSeek(model=settings.llm_model, api_key=key, temperature=settings.llm_temperature, thinking=effort == 'high')
+		# DeepSeek's thinking mode is on by default (effort high unless reasoning_effort says low/high/max). It is a
+		# separate switch from the effort: thinking rides in extra_body, the effort is a top-level reasoning_effort
+		# parameter. browser-use's wrapper only toggles thinking (and only for model names containing 'deepseek-v4'),
+		# so this subclass sends both for every current DeepSeek model.
+		@dataclass
+		class ThinkingDeepSeek(ChatDeepSeek):
+			reasoning_effort: str | None = None
+
+			def _supports_thinking(self) -> bool:
+				return True  # deepseek-flash and deepseek-v4-pro both support thinking mode
+
+			def _request_kwargs(self) -> dict:
+				kwargs = super()._request_kwargs()
+				if self.reasoning_effort:
+					kwargs['reasoning_effort'] = self.reasoning_effort
+				return kwargs
+
+		return ThinkingDeepSeek(
+			model=settings.llm_model, api_key=key, temperature=settings.llm_temperature, thinking=True, reasoning_effort=effort,
+		)
 	if p == 'anthropic':
 		from browser_use import ChatAnthropic
 

@@ -132,7 +132,21 @@ function ProfileCard({
   );
 }
 
-function SignupItem({ row, isDone, onRetry, onLogin, busy }: { row: SignupRow; isDone: boolean; onRetry: () => void; onLogin: () => void; busy: boolean }) {
+function SignupItem({
+  row,
+  isDone,
+  onRetry,
+  onLogin,
+  onForget,
+  busy,
+}: {
+  row: SignupRow;
+  isDone: boolean;
+  onRetry: () => void;
+  onLogin: () => void;
+  onForget: () => void;
+  busy: boolean;
+}) {
   const [secret, setSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -203,6 +217,14 @@ function SignupItem({ row, isDone, onRetry, onLogin, busy }: { row: SignupRow; i
           </button>
         )}
         {err && <span className="text-[12px] text-red-400">{err}</span>}
+        <button
+          onClick={onForget}
+          disabled={busy}
+          className="ml-auto inline-flex items-center gap-1 text-[12px] text-zinc-600 hover:text-red-400 disabled:opacity-40"
+          title="Forget this sign-up here (the account on the site is not deleted)"
+        >
+          <Trash2 className="w-3.5 h-3.5" /> Delete
+        </button>
       </div>
     </div>
   );
@@ -288,6 +310,16 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (ok) {
       setUrl("");
       onClose();
+    }
+  }
+
+  async function forget(site: string, profileId: string) {
+    if (!window.confirm(`Forget the sign-up on ${site} as ${profileId}? The account on the site is not deleted.`)) return;
+    try {
+      setState(await api.deleteSignup(site, profileId));
+      setMessage({ kind: "ok", text: `Forgot the sign-up on ${site} as ${profileId}.` });
+    } catch (e) {
+      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -450,6 +482,7 @@ export function AccountsPanel({ open, onClose }: { open: boolean; onClose: () =>
                     busy={starting}
                     onRetry={() => void signup(row.site, row.profile_id)}
                     onLogin={() => void signup(row.site, row.profile_id, "login")}
+                    onForget={() => void forget(row.site, row.profile_id)}
                   />
                 ))
               )}

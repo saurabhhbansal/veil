@@ -234,10 +234,7 @@ class SignupLog:
 		rows = self.for_site(site)
 		return rows[0] if rows else None
 
-	def record(self, signup: Signup) -> None:
-		signup.updated = time.strftime('%Y-%m-%d %H:%M')
-		self.rows = self._load()  # a parallel run may have written its own row since this log was read
-		self.rows[_row_key(signup.site, signup.profile_id)] = signup
+	def _write(self) -> None:
 		self.path.parent.mkdir(parents=True, exist_ok=True)
 		tmp = self.path.with_suffix('.tmp')
 		with tmp.open('w', newline='', encoding='utf-8') as f:
@@ -245,6 +242,20 @@ class SignupLog:
 			w.writeheader()
 			w.writerows(asdict(s) for s in sorted(self.rows.values(), key=lambda s: (s.site, s.profile_id)))
 		tmp.replace(self.path)
+
+	def record(self, signup: Signup) -> None:
+		signup.updated = time.strftime('%Y-%m-%d %H:%M')
+		self.rows = self._load()  # a parallel run may have written its own row since this log was read
+		self.rows[_row_key(signup.site, signup.profile_id)] = signup
+		self._write()
+
+	def remove(self, site: str, profile_id: str) -> bool:
+		"""Forget one row (the account on the site, if any, is not touched). True if there was one."""
+		self.rows = self._load()
+		if self.rows.pop(_row_key(site, profile_id), None) is None:
+			return False
+		self._write()
+		return True
 
 
 def identity_name(site: str, profile_id: str) -> str:

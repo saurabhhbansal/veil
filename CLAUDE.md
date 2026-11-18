@@ -22,9 +22,12 @@ is the running log of limits and site defences (add a dated entry when a run tea
 - **Windows:** start `chrome.exe` directly (engine.py `fortress_command`), never `cmd /c tilion.cmd`.
   cmd.exe treats `<-loopback>` as redirection, and TILION_NO_DEFAULTS would also drop the WebGPU switches.
 - **The LLM is configurable.** Currently OpenAI `gpt-6-luna` (released Sept 2026). Groq, Anthropic, Gemini,
-  DeepSeek (`ChatDeepSeek`, key in `DEEPSEEK_API_KEY`; its only reasoning switch is `thinking`, so `high` turns it
-  on) and OpenAI-compatible providers are supported in llm.py and selectable in the app. Leave temperature unset by
-  default.
+  DeepSeek (`ChatDeepSeek`, key in `DEEPSEEK_API_KEY`; thinking is on by default and `low`/`high`/`max` pick the
+  effort, sent as `reasoning_effort`) and OpenAI-compatible providers are supported in llm.py and selectable in the
+  app. Leave temperature unset by default.
+- **The app always runs Fortress.** The engine picker was removed: `settings_from_ui` forces `s.engine = 'fortress'`
+  (stealth Chromium) and `/api/config` no longer exposes engines. The other engines stay a CLI/`.env` choice for
+  testing (`veil run --engine ...`).
 - **Proxies:** there's no provider yet. The plan is the user's own phone as a free mobile proxy first, then DataImpulse
   ($1/GB, gateway `http://LOGIN__cr.us;sessid.{session}:PASS@gw.dataimpulse.com:823`). Chromium
   can't authenticate SOCKS proxies: use HTTP. browser-use answers HTTP proxy auth over CDP (Fetch domain).
@@ -76,7 +79,10 @@ Sessions: endpoints take `session` (body or ?session=), default 'main'. A reques
 session/browser/identity (queued past VEIL_MAX_PARALLEL); the app shows them as tabs. Each run in the sidebar has a ⋯ menu
 (open, rename, download recording, delete: /api/runs/<id>/rename|delete).
 LLM effort: Settings.llm_effort (VEIL_LLM_EFFORT, llm.EFFORTS per provider): OpenAI reasoning_effort, Anthropic adaptive thinking +
-output_config.effort, Google thinking_level, DeepSeek thinking (high = on). Proxies: VEIL_PROXY_MODE (direct | list | gateway) picks the source and keeps the others in .env.
+output_config.effort, Google thinking_level, DeepSeek thinking (on by default) + reasoning_effort (low/high/max). Proxies: VEIL_PROXY_MODE (direct | list | gateway) picks the source and keeps the others in .env.
+Deleting: /api/identities/delete {name} removes a saved browser identity (refused while a run uses it);
+/api/accounts/signups/delete {site, profile_id} forgets one sign-up row (the site account stays). Both have a dustbin in the app.
+The app always runs the Fortress engine: engine is not a UI setting (settings_from_ui forces it); /api/config has no engines.
 Country-matched exits: account runs pass the profile's country (geo.country_code) as RunRequest.country -> run_task ->
 StealthSession -> ProxySource.acquire(country=). Lists learn countries from the last test (proxy-status.json); gateways
 fill {country}/{COUNTRY} (VEIL_PROXY_COUNTRY when none). No proxy there: any proxy, and the run posts a notice.

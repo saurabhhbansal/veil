@@ -30,7 +30,9 @@ GET/SSE/WebSocket) and default to 'main'.
     POST /api/accounts/bulk     {url, count, prompt?, values} create `count` NEW accounts there, one run per account:
                                 each gets a different person, its own identity, and a one-account instruction (the
                                 agent never learns the count). Platforms come from GET /api/config.
+    POST /api/accounts/signups/delete {site, profile_id} forget one sign-up row (the site account is not touched)
     POST /api/accounts/reveal   {site, profile_id} the password veil used on that site
+    POST /api/identities/delete {name} remove one saved browser identity (device, exit IP, cookies)
     ... and /api/keys, /api/llm/default, /api/proxies* (admin.py)
 
 The UI has no login, so requests are only accepted from this PC's own origin (or the dev server's): another
@@ -45,6 +47,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
@@ -61,7 +64,7 @@ from veil.llm import EFFORTS, KEY_ENV, MODELS, build_llm
 from veil.planner import Job
 from veil.webui import admin
 from veil.webui.live import LiveView
-from veil.webui.manager import ENGINES, PROVIDERS, saved_identities, settings_from_ui
+from veil.webui.manager import PROVIDERS, saved_identities, settings_from_ui
 from veil.webui.runner import AgentRunner, RunRequest, SessionHub, delete_run, list_runs, load_run, rename_run, review_saved_run
 
 log = logging.getLogger('veil.webui.server')
@@ -72,7 +75,7 @@ DEV_ORIGINS = {'http://localhost:3000', 'http://127.0.0.1:3000'}  # `npm run dev
 UI_VALUE_IDS = {
 	'agent_settings.llm_provider', 'agent_settings.llm_model', 'agent_settings.llm_api_key', 'agent_settings.llm_temperature', 'agent_settings.llm_effort',
 	'agent_settings.max_steps', 'agent_settings.use_vision', 'agent_settings.max_actions', 'agent_settings.extend_system_prompt',
-	'stealth_settings.engine', 'stealth_settings.headful', 'stealth_settings.identity', 'stealth_settings.max_attempts',
+	'stealth_settings.headful', 'stealth_settings.identity', 'stealth_settings.max_attempts',
 	'stealth_settings.geo_match',
 }
 LOOPBACK = {'127.0.0.1', 'localhost', '::1'}
@@ -138,12 +141,28 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 		return {
 			'llm_provider': env.llm_provider, 'llm_model': env.llm_model, 'llm_effort': env.llm_effort,
 			'has_api_key': keys.get(env.llm_provider, False), 'keys': keys, 'providers': PROVIDERS, 'efforts': EFFORTS, 'models': MODELS,
-			'engine': env.engine, 'engines': ENGINES, 'headless': env.headless,
+			'headless': env.headless,
 			'geo_match': env.geo_match, 'max_attempts': env.max_attempts, 'max_steps': env.max_steps, 'max_parallel': hub.max_parallel,
 			'identities': saved_identities(env), 'platforms': accounts.platforms(known), 'max_bulk': env.max_bulk,
 			'proxy': 'gateway' if env.proxy_gateway else 'list' if env.proxy_file else None,
 			'proxy_detail': str(env.proxy_file) if env.proxy_file and not env.proxy_gateway else None,
 		}
+
+	# --- saved browser identities ---------------------------------------------------------------
+
+	@app.post('/api/identities/delete')
+	async def delete_identity(request: Request):
+		"""Remove one saved identity: its sticky device, exit IP and cookies. The site accounts it made stay."""
+		name = str((await body_of(request)).get('name') or '')
+		if not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', name) or name in ('.', '..'):
+			raise HTTPException(400, 'bad identity name')
+		path = env.data_dir / 'identities' / name
+		if not (path / 'identity.json').is_file():
+			raise HTTPException(404, 'no such saved identity')
+		if any(r.busy and (r.identity or {}).get('sticky') == name for r in hub.sessions.values()):
+			raise HTTPException(409, 'a run is using that identity right now: stop it first')
+		await asyncio.to_thread(shutil.rmtree, path)
+		return {'ok': True, 'identities': saved_identities(env)}
 
 	# --- sessions --------------------------------------------------------------------------------
 
@@ -497,6 +516,18 @@ def create_app(env: Settings, *, host: str = '127.0.0.1', port: int = 7788, dev:
 			accounts.save_profiles(profiles_file, merged)
 		except ValueError as e:
 			raise HTTPException(400, str(e)) from e
+		return await accounts_state()
+
+	@app.post('/api/accounts/signups/delete')
+	async def delete_signup(request: Request):
+		"""Forget one sign-up row (the account itself, if it exists on the site, is untouched)."""
+		body = await body_of(request)
+		try:
+			site = accounts.site_of(str(body.get('site') or ''))
+		except ValueError as e:
+			raise HTTPException(400, str(e)) from e
+		if not accounts.SignupLog(signups_file).remove(site, str(body.get('profile_id') or '')):
+			raise HTTPException(404, 'no sign-up for that site and profile')
 		return await accounts_state()
 
 	@app.post('/api/accounts/reveal')

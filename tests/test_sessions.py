@@ -140,13 +140,18 @@ async def test_keys_and_proxies_are_saved_to_env_without_coming_back_out(tmp_pat
 		assert saved['OPENAI_API_KEY'] == saved['VEIL_LLM_API_KEY'] == 'sk-new-key-5678' and '# mine' in env_file.read_text()
 		assert env.llm_api_key == 'sk-new-key-5678'
 		assert (await c.post('/api/keys', json={'provider': 'openai', 'key': 'has space'})).status_code == 400
+		# A non-default provider's key goes under its own variable: the model menu's "Save key & make default".
+		k = (await c.post('/api/keys', json={'provider': 'deepseek', 'key': 'sk-ds-key-9012'})).json()['keys']['deepseek']
+		assert k['set'] and k['source'] == 'DEEPSEEK_API_KEY' and dotenv_values(env_file)['DEEPSEEK_API_KEY'] == 'sk-ds-key-9012'
 		# a new default provider: the old VEIL_LLM_API_KEY is not sent to it
 		await c.post('/api/llm/default', json={'provider': 'anthropic', 'model': 'claude-opus-5-5', 'effort': 'high'})
 		assert (env.llm_provider, env.llm_model, env.llm_effort, env.llm_api_key) == ('anthropic', 'claude-opus-5-5', 'high', None)
 		assert 'VEIL_LLM_API_KEY' not in dotenv_values(env_file) and dotenv_values(env_file)['VEIL_LLM_EFFORT'] == 'high'
 		assert (await c.post('/api/llm/default', json={'provider': 'anthropic', 'model': 'x', 'effort': 'minimal'})).status_code == 400
 		cfg = (await c.get('/api/config')).json()
-		assert cfg['keys']['openai'] and not cfg['keys']['anthropic'] and cfg['efforts']['anthropic'][-1] == 'max'
+		assert cfg['keys']['openai'] and cfg['keys']['deepseek'] and not cfg['keys']['anthropic'] and cfg['efforts']['anthropic'][-1] == 'max'
+		assert cfg['efforts']['deepseek'] == ['low', 'high', 'max'] and cfg['models']['deepseek'] == ['deepseek-flash', 'deepseek-v4-pro']
+		assert 'engine' not in cfg and 'engines' not in cfg  # the app always runs Fortress; no engine picker
 
 		r = (await c.post('/api/proxies/add', json={'text': 'gw.test:823:user:pa:ss\nsocks5://u:p@h.test:1080\n\nhttp://dead.test:80'})).json()
 		assert r['mode'] == 'list' and len(r['proxies']) == 2 and len(r['errors']) == 1  # SOCKS with a password can't work in Chromium
@@ -163,7 +168,7 @@ async def test_keys_and_proxies_are_saved_to_env_without_coming_back_out(tmp_pat
 		r = (await c.post('/api/proxies/remove', json={'ids': [p['id'] for p in r['proxies']]})).json()
 		assert r['proxies'] == []
 	assert os.environ['VEIL_PROXY_MODE'] == 'direct'
-	for var in ('VEIL_PROXY_MODE', 'VEIL_PROXY_GATEWAY', 'VEIL_PROXY_FILE', 'OPENAI_API_KEY', 'VEIL_LLM_EFFORT'):
+	for var in ('VEIL_PROXY_MODE', 'VEIL_PROXY_GATEWAY', 'VEIL_PROXY_FILE', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'VEIL_LLM_EFFORT'):
 		os.environ.pop(var, None)  # written by the endpoints, not by monkeypatch
 
 

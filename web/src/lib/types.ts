@@ -172,8 +172,6 @@ export interface VeilConfig {
   efforts: Record<string, string[]>; // provider -> effort levels, lowest first
   models: Record<string, string[]>; // provider -> suggested model names
   max_parallel: number;
-  engine: string;
-  engines: string[];
   headless: boolean;
   geo_match: boolean;
   max_attempts: number;

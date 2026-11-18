@@ -27,13 +27,14 @@ def test_ui_fields_override_settings_and_agent_kwargs():
 		'agent_settings.llm_model': 'gpt-6-luna-mini', 'agent_settings.llm_temperature': None, 'agent_settings.max_steps': 12,
 		'agent_settings.use_vision': False, 'agent_settings.max_actions': 3, 'agent_settings.extend_system_prompt': 'be brief',
 		'stealth_settings.headful': True, 'stealth_settings.geo_match': False, 'stealth_settings.identity': 'shop1',
-		'stealth_settings.max_attempts': 5,
+		'stealth_settings.max_attempts': 5, 'stealth_settings.engine': 'chromium',
 	}
 	base = _base()
 	s, identity, max_steps, kwargs = settings_from_ui(values, base)
 	assert (s.llm_model, s.llm_temperature, s.headless, s.geo_match, s.max_attempts) == ('gpt-6-luna-mini', None, False, False, 5)
 	assert (identity, max_steps) == ('shop1', 12)
 	assert kwargs == {'use_vision': False, 'max_actions_per_step': 3, 'extend_system_message': 'be brief'}
+	assert s.engine == 'fortress'  # the app always runs the Fortress stealth browser; engine is not a UI choice
 	assert base.headless is True  # the env settings object is never mutated
 
 
@@ -193,7 +194,8 @@ def test_server_refuses_other_origins_and_odd_paths(tmp_path):
 	assert c.get('/api/state', headers={'host': 'evil.example:7788'}).status_code == 403  # DNS rebinding
 	assert c.post('/api/run', json={'task': ' '}).status_code == 400
 	assert c.get('/api/runs/..%2F..%2Fsecrets/x.txt').status_code == 404
-	assert 'llm_api_key' not in c.get('/api/config').json()
+	cfg = c.get('/api/config').json()
+	assert 'llm_api_key' not in cfg and 'engine' not in cfg and 'engines' not in cfg  # Fortress only, no engine picker
 	assert takes_control({'t': 'mouse', 'type': 'mousePressed'}) and not takes_control({'t': 'mouse', 'type': 'mouseMoved'})
 	assert not takes_control({'t': 'wheel'})
 
@@ -232,6 +234,30 @@ async def test_accounts_api_keeps_passwords_server_side_and_records_signups(tmp_
 		assert row['status'] == 'verify_email' and 'password' not in row
 		assert (await c.post('/api/accounts/reveal', json={'site': 'shop.test'})).json()['password'] == 'S3cret!'
 		assert (await c.post('/api/accounts/signup', json={'url': 'shop.test'})).status_code == 409  # one account per site
+		# Forgetting a sign-up row clears the log entry; the account on the site (and its saved identity) stay.
+		r = await c.post('/api/accounts/signups/delete', json={'site': 'shop.test', 'profile_id': 'me'})
+		assert r.status_code == 200 and r.json()['signups'] == []
+		assert (await c.post('/api/accounts/signups/delete', json={'site': 'shop.test', 'profile_id': 'me'})).status_code == 404
+		assert (await c.post('/api/accounts/signups/delete', json={'site': '', 'profile_id': 'me'})).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_saved_identities_can_be_deleted_and_bad_names_refused(tmp_path):
+	from httpx import ASGITransport, AsyncClient
+
+	from veil.webui.server import create_app
+
+	env = Settings(data_dir=tmp_path)
+	saved = tmp_path / 'identities' / 'acct-shop.test-me'
+	saved.mkdir(parents=True)
+	(saved / 'identity.json').write_text('{}', encoding='utf-8')
+	app = create_app(env, port=7788)
+	async with AsyncClient(transport=ASGITransport(app=app), base_url='http://127.0.0.1:7788') as c:
+		assert (await c.get('/api/config')).json()['identities'] == ['acct-shop.test-me']
+		assert (await c.post('/api/identities/delete', json={'name': '../accounts'})).status_code == 400
+		assert (await c.post('/api/identities/delete', json={'name': 'nope'})).status_code == 404
+		r = await c.post('/api/identities/delete', json={'name': 'acct-shop.test-me'})
+		assert r.status_code == 200 and r.json()['identities'] == [] and not saved.exists()
 
 
 

@@ -3,17 +3,10 @@
 // Adapted from chat-ui-example's model-selector.tsx (IconDropdown / DropdownRow). The Browser Use Cloud
 // pickers (BU models, cloud profiles, workspaces, proxy countries) are replaced by veil's run settings.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Cpu, Fingerprint, Globe, KeyRound, Loader2, Scale, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { Check, Cpu, Fingerprint, Globe, KeyRound, Loader2, Scale, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useSettings } from "@/context/settings-context";
 import { api } from "@/lib/api";
-import type { KeysState } from "@/lib/types";
-
-const ENGINE_NOTES: Record<string, string> = {
-  fortress: "Stealth Chromium (default)",
-  "fortress-docker": "Fortress in Docker",
-  cdp: "A browser you started (VEIL_CDP_URL)",
-  chromium: "Stock Chromium: NOT stealthy, testing only",
-};
+import type { KeyInfo, KeysState } from "@/lib/types";
 
 interface IconDropdownProps {
   icon: ReactNode;
@@ -70,19 +63,40 @@ function IconDropdown({ icon, title, activeColor, isActive, children, open, onTo
   );
 }
 
-function DropdownRow({ label, hint, selected, onSelect }: { label: string; hint?: string; selected: boolean; onSelect: () => void }) {
+function DropdownRow({
+  label,
+  hint,
+  selected,
+  onSelect,
+  onDelete,
+}: {
+  label: string;
+  hint?: string;
+  selected: boolean;
+  onSelect: () => void;
+  onDelete?: () => void;
+}) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-zinc-800 flex items-center gap-2 ${selected ? "text-white font-medium" : "text-zinc-400"}`}
-    >
-      <span className="flex-1 min-w-0">
-        <span className="block truncate">{label}</span>
-        {hint && <span className="block truncate text-[10px] text-zinc-500 font-normal">{hint}</span>}
-      </span>
-      {selected && <Check size={12} className="text-zinc-400 flex-shrink-0" />}
-    </button>
+    <div className={`w-full flex items-center gap-1 hover:bg-zinc-800 ${selected ? "text-white font-medium" : "text-zinc-400"}`}>
+      <button type="button" onClick={onSelect} className="flex-1 min-w-0 text-left pl-3 py-1.5 text-xs flex items-center gap-2">
+        <span className="flex-1 min-w-0">
+          <span className="block truncate">{label}</span>
+          {hint && <span className="block truncate text-[10px] text-zinc-500 font-normal">{hint}</span>}
+        </span>
+        {selected && <Check size={12} className="text-zinc-400 flex-shrink-0" />}
+      </button>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          title={`Delete the saved identity "${label}"`}
+          aria-label={`Delete saved identity ${label}`}
+          className="shrink-0 px-2 py-2 text-zinc-600 hover:text-red-400"
+        >
+          <Trash2 size={13} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -159,41 +173,31 @@ function EffortSlider({ levels, value, onChange }: { levels: string[]; value: st
 }
 
 /** The provider's API key: whether one is set (masked), and a box to save a new one to .env. */
-function KeyRow({ provider, keys, onSaved }: { provider: string; keys: KeysState | null; onSaved: (k: KeysState) => void }) {
-  const info = keys?.keys[provider];
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  useEffect(() => {
-    setDraft("");
-    setMsg(null);
-  }, [provider]);
-  if (!info) {
-    return provider === "openai-compatible" ? (
-      <p className="px-3 py-1.5 text-[10px] text-zinc-500">Key and URL come from VEIL_LLM_API_KEY / VEIL_LLM_BASE_URL in .env.</p>
-    ) : null;
-  }
-
-  async function save(value: string) {
-    setBusy(true);
-    setMsg(null);
-    try {
-      onSaved(await api.saveKey(provider, value));
-      setDraft("");
-      setMsg({ ok: true, text: value ? `Saved to .env as ${info!.var}` : "Removed from .env" });
-    } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
-
+function KeyRow({
+  provider,
+  info,
+  draft,
+  onDraft,
+  busy,
+  msg,
+  onSave,
+  onRemove,
+}: {
+  provider: string;
+  info: KeyInfo;
+  draft: string;
+  onDraft: (value: string) => void;
+  busy: boolean;
+  msg: { ok: boolean; text: string } | null;
+  onSave: () => void;
+  onRemove: () => void;
+}) {
   return (
     <form
       className="px-3 py-2 space-y-1.5 border-t border-zinc-800"
       onSubmit={(e) => {
         e.preventDefault();
-        if (draft.trim()) void save(draft.trim());
+        if (draft.trim()) onSave();
       }}
     >
       <div className="flex items-center gap-1.5 text-xs text-zinc-300">
@@ -208,7 +212,7 @@ function KeyRow({ provider, keys, onSaved }: { provider: string; keys: KeysState
           type="password"
           autoComplete="off"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => onDraft(e.target.value)}
           placeholder={info.set ? "Paste a new key to replace it" : `Paste your ${provider} key`}
           className="flex-1 min-w-0 bg-zinc-800 text-zinc-200 text-xs rounded px-2 py-1.5 outline-none placeholder-zinc-500"
         />
@@ -217,9 +221,9 @@ function KeyRow({ provider, keys, onSaved }: { provider: string; keys: KeysState
         </button>
       </div>
       <p className={`text-[10px] ${msg ? (msg.ok ? "text-green-400" : "text-red-400") : "text-zinc-500"}`}>
-        {msg?.text ?? `Saves to your .env as ${info.var}. Keys never come back to this page.`}
+        {msg?.text ?? `Written to your .env as ${info.var} by Save, or by Save key & make default. Keys never come back to this page.`}
         {!msg && info.set && info.in_file && (
-          <button type="button" onClick={() => void save("")} className="ml-1 underline hover:text-zinc-300">
+          <button type="button" onClick={onRemove} className="ml-1 underline hover:text-zinc-300">
             Remove
           </button>
         )}
@@ -234,10 +238,16 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
   const [newIdentity, setNewIdentity] = useState("");
   const [keys, setKeys] = useState<KeysState | null>(null);
   const [defaultMsg, setDefaultMsg] = useState<string | null>(null);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [identityMsg, setIdentityMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     if (openDropdown !== "llm") return;
     setDefaultMsg(null);
+    setKeyDraft("");
+    setKeyMsg(null);
     api.keys().then(setKeys).catch(() => setKeys(null));
   }, [openDropdown]);
 
@@ -247,6 +257,57 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
   if (!config || !settings) {
     return <span className="text-[11px] text-zinc-600 px-1">Connecting to veil…</span>;
   }
+
+  /** Save a provider key to .env ("" removes it). True when it was written. */
+  const saveKey = async (value: string): Promise<boolean> => {
+    setKeyBusy(true);
+    setKeyMsg(null);
+    try {
+      const saved = await api.saveKey(settings.provider, value);
+      setKeys(saved);
+      setKeyDraft("");
+      setKeyMsg({
+        ok: true,
+        text: value ? `Saved to .env as ${saved.keys[settings.provider]?.var ?? "the provider key"}` : "Removed from .env",
+      });
+      await refreshConfig();
+      return true;
+    } catch (e) {
+      setKeyMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      return false;
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
+  /** One button for the whole model setup: a key typed into the box above is saved too, not silently dropped. */
+  const makeDefault = async () => {
+    const draft = keyDraft.trim();
+    setDefaultMsg(null);
+    if (draft && !(await saveKey(draft))) return; // the key row shows why
+    try {
+      setKeys(await api.saveLlmDefault(settings.provider, settings.model, settings.effort));
+      await refreshConfig();
+      setDefaultMsg(draft ? "Saved the key and made this the default in .env" : "Saved as the default in .env");
+    } catch (e) {
+      setDefaultMsg(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const removeIdentity = async (name: string) => {
+    if (!window.confirm(`Delete the saved identity "${name}"? Its device, exit IP and cookies are removed. Accounts it signed up for stay on their sites.`)) {
+      return;
+    }
+    setIdentityMsg(null);
+    try {
+      await api.deleteIdentity(name);
+      if (settings.identity === name) update({ identity: "" });
+      await refreshConfig();
+      setIdentityMsg({ ok: true, text: `Deleted "${name}".` });
+    } catch (e) {
+      setIdentityMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    }
+  };
 
   const identities = Array.from(new Set([...config.identities, ...(settings.identity ? [settings.identity] : [])]));
   const identityOk = /^[A-Za-z0-9_.-]{1,64}$/.test(newIdentity);
@@ -270,9 +331,12 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
             label={p}
             hint={[p === config.llm_provider ? "default" : "", config.keys[p] === undefined ? "" : config.keys[p] ? "key set" : "no key"].filter(Boolean).join(" · ") || undefined}
             selected={settings.provider === p}
-            onSelect={() =>
-              update({ provider: p, model: p === config.llm_provider ? config.llm_model : config.models[p]?.[0] ?? "", effort: p === config.llm_provider ? config.llm_effort ?? "" : "" })
-            }
+            onSelect={() => {
+              update({ provider: p, model: p === config.llm_provider ? config.llm_model : config.models[p]?.[0] ?? "", effort: p === config.llm_provider ? config.llm_effort ?? "" : "" });
+              setKeyDraft("");
+              setKeyMsg(null);
+              setDefaultMsg(null);
+            }}
           />
         ))}
         <div className="p-2 border-t border-zinc-800 space-y-1">
@@ -308,31 +372,29 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
         ) : (
           <p className="px-3 py-1.5 text-[10px] text-zinc-500">No effort setting for {settings.provider}.</p>
         )}
-        <KeyRow
-          provider={settings.provider}
-          keys={keys}
-          onSaved={(k) => {
-            setKeys(k);
-            void refreshConfig();
-          }}
-        />
+        {keys?.keys[settings.provider] ? (
+          <KeyRow
+            provider={settings.provider}
+            info={keys.keys[settings.provider]}
+            draft={keyDraft}
+            onDraft={setKeyDraft}
+            busy={keyBusy}
+            msg={keyMsg}
+            onSave={() => void saveKey(keyDraft.trim())}
+            onRemove={() => void saveKey("")}
+          />
+        ) : keys && settings.provider === "openai-compatible" ? (
+          <p className="px-3 py-1.5 text-[10px] text-zinc-500">Key and URL come from VEIL_LLM_API_KEY / VEIL_LLM_BASE_URL in .env.</p>
+        ) : null}
         <div className="px-3 py-2 border-t border-zinc-800 flex items-center gap-2">
           <button
             type="button"
-            onClick={async () => {
-              try {
-                await api.saveLlmDefault(settings.provider, settings.model, settings.effort);
-                await refreshConfig();
-                setDefaultMsg("Saved as the default in .env");
-              } catch (e) {
-                setDefaultMsg(e instanceof Error ? e.message : String(e));
-              }
-            }}
+            onClick={() => void makeDefault()}
             disabled={!settings.model.trim()}
             className="text-[11px] px-2 py-1 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-            title="Write provider, model and effort to .env (VEIL_LLM_PROVIDER / _MODEL / _EFFORT)"
+            title="Write provider, model, effort and any key you typed to .env (VEIL_LLM_PROVIDER / _MODEL / _EFFORT / <provider>_API_KEY)"
           >
-            Make default
+            {keyDraft.trim() ? "Save key & make default" : "Make default"}
           </button>
           <span className="text-[10px] text-zinc-500 truncate">{defaultMsg ?? "This run uses what's picked here."}</span>
         </div>
@@ -369,8 +431,12 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
               update({ identity: name });
               close();
             }}
+            onDelete={() => void removeIdentity(name)}
           />
         ))}
+        {identityMsg && (
+          <p className={`px-3 py-1 text-[10px] ${identityMsg.ok ? "text-green-400" : "text-red-400"}`}>{identityMsg.text}</p>
+        )}
         <form
           className="p-2 border-t border-zinc-800 flex gap-1"
           onSubmit={(e) => {
@@ -391,31 +457,6 @@ export function SettingsBar({ disabled, onManageProxies }: { disabled?: boolean;
             Use
           </button>
         </form>
-      </IconDropdown>
-
-      {/* Engine */}
-      <IconDropdown
-        icon={<ShieldCheck size={16} />}
-        title={`Engine: ${settings.engine}`}
-        activeColor={settings.engine === "chromium" ? "red" : "purple"}
-        isActive
-        open={openDropdown === "engine"}
-        onToggle={() => toggle("engine")}
-        onClose={close}
-        width="w-[260px]"
-      >
-        {config.engines.map((e) => (
-          <DropdownRow
-            key={e}
-            label={e}
-            hint={ENGINE_NOTES[e]}
-            selected={settings.engine === e}
-            onSelect={() => {
-              update({ engine: e });
-              close();
-            }}
-          />
-        ))}
       </IconDropdown>
 
       {/* Network */}

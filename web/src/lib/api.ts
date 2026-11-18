@@ -61,12 +61,16 @@ export const api = {
 
   accounts: () => call<AccountsState>("/api/accounts"),
   saveProfiles: (profiles: Omit<ProfileDraft, "key" | "has_password">[]) => call<AccountsState>("/api/accounts/profiles", { profiles }),
+  deleteSignup: (site: string, profileId: string) =>
+    call<AccountsState>("/api/accounts/signups/delete", { site, profile_id: profileId }),
   reveal: (site: string, profileId: string) =>
     call<{ site: string; email: string; password: string }>("/api/accounts/reveal", { site, profile_id: profileId }),
   account: (action: "signup" | "login", url: string, profileId: string, values: Record<string, unknown>, review: boolean) =>
     call<Snapshot>(`/api/accounts/${action}`, { url, profile_id: profileId || null, values, review }),
   bulkAccounts: (body: { url: string; count: number; prompt: string; values: Record<string, unknown>; review: boolean }) =>
     call<Snapshot>("/api/accounts/bulk", body),
+
+  deleteIdentity: (name: string) => call<{ ok: boolean; identities: string[] }>("/api/identities/delete", { name }),
 
   keys: () => call<KeysState>("/api/keys"),
   saveKey: (provider: string, key: string) => call<KeysState>("/api/keys", { provider, key }),

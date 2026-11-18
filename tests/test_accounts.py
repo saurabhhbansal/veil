@@ -148,6 +148,16 @@ def test_save_profiles_validates_and_round_trips(tmp_path):
 	assert A.load_profiles(path)[0]['email'] == 'me@a.com'  # a rejected save leaves the file alone
 
 
+def test_signup_log_forgets_one_row(tmp_path):
+	log = A.SignupLog(tmp_path / 'signups.csv')
+	log.record(A.Signup('shop.test', 'p1', 'a@a.com', 'pw1', 'failed', 'acct-shop.test-p1'))
+	log.record(A.Signup('shop.test', 'p2', 'b@b.com', 'pw2', 'signed_up', 'acct-shop.test-p2'))
+	assert log.remove('shop.test', 'p1')
+	assert [row.profile_id for row in A.SignupLog(log.path).for_site('shop.test')] == ['p2']
+	assert not log.remove('shop.test', 'p1')  # already gone
+	assert A.SignupLog(log.path).get('shop.test', 'p2').password == 'pw2'  # the other row is untouched
+
+
 def test_watched_signups_ask_the_person_instead_of_stopping():
 	assert 'request_human_help' in A.build_task('https://a.test', {'x_email': 'e'}, ask_human=True)
 	assert 'request_human_help' not in A.build_task('https://a.test', {'x_email': 'e'})

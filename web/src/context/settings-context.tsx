@@ -13,7 +13,6 @@ export interface VeilSettings {
   model: string;
   effort: string; // "" = the provider's default
   identity: string; // "" = a fresh device and exit IP every run
-  engine: string;
   geoMatch: boolean;
   maxAttempts: number;
   maxSteps: number;
@@ -40,7 +39,6 @@ function fromConfig(c: VeilConfig): VeilSettings {
     model: c.llm_model,
     effort: c.llm_effort ?? "",
     identity: "",
-    engine: c.engine,
     geoMatch: c.geo_match,
     maxAttempts: c.max_attempts,
     maxSteps: c.max_steps,
@@ -130,7 +128,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       "agent_settings.llm_effort": settings.effort,
       "agent_settings.max_steps": settings.maxSteps,
       "agent_settings.use_vision": settings.useVision,
-      "stealth_settings.engine": settings.engine,
       "stealth_settings.identity": settings.identity,
       "stealth_settings.max_attempts": settings.maxAttempts,
       "stealth_settings.geo_match": settings.geoMatch,

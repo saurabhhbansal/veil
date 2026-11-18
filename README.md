@@ -59,7 +59,7 @@ cd web && npm install && npm run build && cd ..   # once (Node.js 20+); rebuild 
 uv run veil ui                                    # opens http://127.0.0.1:7788 in your browser
 ```
 
-Type a task (the icons under the box set the LLM, sticky identity, engine, geo-match / attempts, and window), then:
+Type a task (the icons under the box set the LLM, sticky identity, geo-match / attempts, and window), then:
 - **Chat (left):** each step's goal and actions, the identities tried, blocks, and the result. Follow-up messages start a new task.
 - **Agent's Browser (right):** the live stealth browser, and it's **interactive**: click, scroll, type, paste and use the
   address bar. Your first click or key press pauses the agent before its next step (**Take control** does the same);
@@ -81,6 +81,8 @@ Type a task (the icons under the box set the LLM, sticky identity, engine, geo-m
   profile per email you own); **Sign-ups** starts a sign-up on a site and lists where each profile was used, with status,
   notes, retry and the password veil used. Passwords never reach the page unless you press *Show password*, and the
   agent only ever sees placeholders (`x_email`, ...). In the app, CAPTCHAs and codes during a sign-up come to you.
+  **Delete things with the dustbin:** a sign-up entry on its row, or a saved sticky identity in the identity menu
+  (its device, exit IP and cookies; the account on the site is untouched). *Remove profile* deletes a profile.
 - **Create accounts (above the prompt box):** pick a platform, set how many accounts, and press send; anything typed in
   the box is extra instructions **each** account gets. veil starts one run per account, each with its own person, its own
   fresh browser identity (device, exit IP, cookies) and a **single-account** instruction: the agent is never told how many
@@ -138,8 +140,8 @@ Everything is set through environment variables; see [`.env.example`](.env.examp
 | Variable | Meaning |
 |---|---|
 | `VEIL_LLM_PROVIDER` / `VEIL_LLM_MODEL` / `VEIL_LLM_API_KEY` | Agent brain. Defaults to `openai` / `gpt-6-luna`. `deepseek` (key in `DEEPSEEK_API_KEY`), `groq`, `anthropic` and `google` work the same way; all are selectable in the app's model menu. |
-| `VEIL_LLM_EFFORT` | Reasoning effort where the provider has levels; for `deepseek`, `high` turns thinking on. |
-| `VEIL_ENGINE` | `fortress` (default), `fortress-docker`, `cdp`, or `chromium` (testing only, not stealthy) |
+| `VEIL_LLM_EFFORT` | Reasoning effort where the provider has levels. `deepseek`: `low` / `high` / `max`; its thinking mode is on by default (default effort `high`). |
+| `VEIL_ENGINE` | The chat app always runs `fortress`; `fortress-docker`, `cdp` and `chromium` (testing only, not stealthy) are for the CLI. |
 | `VEIL_PROXY_GATEWAY` | Provider gateway URL with a `{session}` placeholder for sticky IPs |
 | `VEIL_PROXY_FILE` | One proxy per line, rotated with cooldowns |
 | `VEIL_GEO_MATCH` | Match persona timezone and language to the exit IP (default on) |
